@@ -87,7 +87,7 @@ impl NullnetGrpcImpl {
         let destinations = vec![proxy_ip, service_ip];
 
         // create dedicated VLAN on the machine where the proxy is running on
-        let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+        let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
         self.orchestrator
             .send_vlan_setup_requests(proxy_ip, veth_ip, vlan_id, &destinations)
             .await?;
