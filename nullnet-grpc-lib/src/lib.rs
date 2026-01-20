@@ -57,7 +57,7 @@ impl AppGuardGrpcInterface {
         self.client
             .proxy(Request::new(message))
             .await
-            .map(|response| response.into_inner())
+            .map(tonic::Response::into_inner)
             .map_err(|e| e.to_string())
     }
 }

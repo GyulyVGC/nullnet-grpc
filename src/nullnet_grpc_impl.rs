@@ -46,7 +46,7 @@ impl NullnetGrpcImpl {
 
         let sender_ip = request
             .remote_addr()
-            .ok_or_else(|| "Could not get remote address for control channel request")
+            .ok_or("Could not get remote address for control channel request")
             .handle_err(location!())?
             .ip();
         self.orchestrator
@@ -62,7 +62,7 @@ impl NullnetGrpcImpl {
     ) -> Result<Response<Upstream>, Error> {
         let proxy_ip = request
             .remote_addr()
-            .ok_or_else(|| "Could not get remote address for proxy request")
+            .ok_or("Could not get remote address for proxy request")
             .handle_err(location!())?
             .ip();
 
@@ -72,7 +72,7 @@ impl NullnetGrpcImpl {
         let service_socket = self
             .services
             .get(&service)
-            .ok_or_else(|| "Service not found")
+            .ok_or("Service not found")
             .handle_err(location!())?;
         let service_ip = service_socket.ip();
         let service_port = service_socket.port();
@@ -100,7 +100,7 @@ impl NullnetGrpcImpl {
 
         Ok(Response::new(Upstream {
             ip: veth_ip.to_string(),
-            port: service_port as u32,
+            port: u32::from(service_port),
         }))
     }
 }

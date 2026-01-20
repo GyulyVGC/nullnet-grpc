@@ -40,7 +40,7 @@ impl Orchestrator {
     ) -> Result<(), Error> {
         let msg = VlanSetup {
             target_ip: target_ip.to_string(),
-            vlan_id: vlan_id as u32,
+            vlan_id: u32::from(vlan_id),
             veth_ip: veth_ip.to_string(),
         };
 
