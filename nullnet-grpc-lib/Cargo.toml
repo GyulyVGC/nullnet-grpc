@@ -1,0 +1,28 @@
+[package]
+name = "nullnet-grpc"
+version = "0.1.0"
+edition = "2024"
+authors = ["Giuliano Bellini <gyulyvgc99@gmail.com>"]
+#description = ""
+readme = "../README.md"
+#homepage = ""
+#repository = ""
+#documentation = ""
+license = "AGPL-3.0-only"
+keywords = ["firewall", "network", "application", "centralized", "monitor"]
+categories = ["network-programming"]
+#include = []
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+
+[dependencies]
+tonic = { version = "0.13.1", features = ["_tls-any", "tls-native-roots"] }
+prost = "0.13.5"
+tokio = "1.45.0"
+serde = { version = "1.0.219", features = ["derive"] }
+
+[badges]
+maintenance = { status = "actively-developed" }

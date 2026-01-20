@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package nullnet_grpc;
+
+service NullnetGrpc {
+  // Control channel
+  rpc ControlChannel(stream Empty) returns (stream VlanSetup);
+  // Proxy
+  rpc Proxy(ProxyRequest) returns (Upstream);
+}
+
+// Client --------------------------------------------------------------------------------------------------------------
+
+//message ClientMessage {
+//  oneof payload {
+//    Empty hello = 1;
+//    Empty ack = 2;
+//  }
+//}
+
+message Empty { }
+
+// Server --------------------------------------------------------------------------------------------------------------
+
+//message ServerMessage {
+//  oneof payload {
+//    VlanSetup vlan_setup = 1;
+//  }
+//}
+
+message VlanSetup {
+  string target_ip = 1;
+  string veth_ip = 2;
+  uint32 vlan_id = 3;
+}
+
+// Proxy ---------------------------------------------------------------------------------------------------------------
+
+message ProxyRequest {
+  string service_name = 1;
+}
+
+message Upstream {
+  string ip = 1;
+  uint32 port = 2;
+}
