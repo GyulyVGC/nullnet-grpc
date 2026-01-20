@@ -1,13 +1,13 @@
 mod proto;
 
+use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
+use crate::nullnet_grpc::{Empty, ProxyRequest, Upstream, VlanSetup};
 pub use proto::*;
 use tokio::sync::mpsc;
+use tonic::Request;
 pub use tonic::Streaming;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, ClientTlsConfig};
-use tonic::{Request};
-use crate::nullnet_grpc::{ClientMessage, ServerMessage};
-use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
 
 #[derive(Clone)]
 pub struct AppGuardGrpcInterface {
@@ -39,8 +39,8 @@ impl AppGuardGrpcInterface {
     #[allow(clippy::missing_errors_doc)]
     pub async fn control_channel(
         &self,
-        receiver: mpsc::Receiver<ClientMessage>,
-    ) -> Result<Streaming<ServerMessage>, String> {
+        receiver: mpsc::Receiver<Empty>,
+    ) -> Result<Streaming<VlanSetup>, String> {
         let receiver = ReceiverStream::new(receiver);
 
         Ok(self
@@ -50,5 +50,14 @@ impl AppGuardGrpcInterface {
             .await
             .map_err(|e| e.to_string())?
             .into_inner())
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn proxy(&mut self, message: ProxyRequest) -> Result<Upstream, String> {
+        self.client
+            .proxy(Request::new(message))
+            .await
+            .map(|response| response.into_inner())
+            .map_err(|e| e.to_string())
     }
 }
