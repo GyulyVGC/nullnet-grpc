@@ -10,11 +10,11 @@ use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, ClientTlsConfig};
 
 #[derive(Clone)]
-pub struct AppGuardGrpcInterface {
+pub struct NullnetGrpcInterface {
     client: NullnetGrpcClient<Channel>,
 }
 
-impl AppGuardGrpcInterface {
+impl NullnetGrpcInterface {
     #[allow(clippy::missing_errors_doc)]
     pub async fn new(host: &str, port: u16, tls: bool) -> Result<Self, String> {
         let protocol = if tls { "https" } else { "http" };
@@ -53,8 +53,9 @@ impl AppGuardGrpcInterface {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub async fn proxy(&mut self, message: ProxyRequest) -> Result<Upstream, String> {
+    pub async fn proxy(&self, message: ProxyRequest) -> Result<Upstream, String> {
         self.client
+            .clone()
             .proxy(Request::new(message))
             .await
             .map(tonic::Response::into_inner)
