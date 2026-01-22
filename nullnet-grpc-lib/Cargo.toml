@@ -23,7 +23,7 @@ tonic = { version = "0.14.2", features = ["_tls-any", "tls-native-roots"] }
 prost = "0.14.3"
 tonic-prost = "0.14.2"
 tokio = "1.49.0"
-#serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 
 [badges]
 maintenance = { status = "actively-developed" }

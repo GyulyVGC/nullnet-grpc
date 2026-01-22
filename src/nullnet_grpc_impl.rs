@@ -1,38 +1,27 @@
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
-use crate::proto::nullnet_grpc::{Empty, ProxyRequest, Upstream, VlanSetup};
-use crate::service::{Service, ServiceToml, ServicesToml};
+use crate::proto::nullnet_grpc::{Empty, ProxyRequest, Services, Upstream, VlanSetup};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
-use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 pub(crate) struct NullnetGrpcImpl {
     /// The available services and their host machine addresses
-    services: HashMap<Service, SocketAddr>,
+    services: Arc<RwLock<HashMap<String, SocketAddr>>>,
     /// Last registered VLAN ID
     last_registered_vlan: Arc<Mutex<u16>>,
+    /// Orchestrator to manage TAP-based clients and VLAN setups
     orchestrator: Orchestrator,
 }
 
 impl NullnetGrpcImpl {
     pub fn new() -> Self {
-        let toml_str = fs::read_to_string("services.toml").expect("Failed to read services.toml");
-        let services_toml =
-            toml::from_str::<ServicesToml>(&toml_str).expect("Failed to parse services.toml");
-
-        let services: HashMap<Service, SocketAddr> = services_toml
-            .services
-            .into_iter()
-            .filter_map(ServiceToml::into_mapping)
-            .collect();
-
         NullnetGrpcImpl {
-            services,
+            services: Arc::new(RwLock::new(HashMap::new())),
             last_registered_vlan: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
         }
@@ -67,11 +56,12 @@ impl NullnetGrpcImpl {
             .ip();
 
         let req = request.into_inner();
-        let service = Service(req.service_name);
-
         let service_socket = self
             .services
-            .get(&service)
+            .read()
+            .await
+            .get(&req.service_name)
+            .copied()
             .ok_or("Service not found")
             .handle_err(location!())?;
         let service_ip = service_socket.ip();
@@ -103,6 +93,29 @@ impl NullnetGrpcImpl {
             port: u32::from(service_port),
         }))
     }
+
+    async fn services_list_impl(
+        &self,
+        request: Request<Services>,
+    ) -> Result<Response<Empty>, Error> {
+        let sender_ip = request
+            .remote_addr()
+            .ok_or("Could not get remote address for services list request")
+            .handle_err(location!())?
+            .ip();
+
+        let req = request.into_inner();
+        for service in req.services {
+            let service_port = u16::try_from(service.port).handle_err(location!())?;
+            let service_name = service.name;
+            self.services
+                .write()
+                .await
+                .insert(service_name, SocketAddr::new(sender_ip, service_port));
+        }
+
+        Ok(Response::new(Empty {}))
+    }
 }
 
 #[tonic::async_trait]
@@ -121,6 +134,12 @@ impl NullnetGrpc for NullnetGrpcImpl {
         );
 
         self.control_channel_impl(request)
+            .await
+            .map_err(|err| Status::internal(err.to_str()))
+    }
+
+    async fn services_list(&self, req: Request<Services>) -> Result<Response<Empty>, Status> {
+        self.services_list_impl(req)
             .await
             .map_err(|err| Status::internal(err.to_str()))
     }

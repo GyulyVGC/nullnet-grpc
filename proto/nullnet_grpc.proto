@@ -3,30 +3,21 @@ syntax = "proto3";
 package nullnet_grpc;
 
 service NullnetGrpc {
+  // TAP-based clients APIs --------------------------------------------------------------------------------------------
+
   // Control channel
   rpc ControlChannel(stream Empty) returns (stream VlanSetup);
+
+  // Services list
+  rpc ServicesList(Services) returns (Empty);
+
+  // Proxy-based clients APIs ------------------------------------------------------------------------------------------
+
   // Proxy
   rpc Proxy(ProxyRequest) returns (Upstream);
 }
 
-// Client --------------------------------------------------------------------------------------------------------------
-
-//message ClientMessage {
-//  oneof payload {
-//    Empty hello = 1;
-//    Empty ack = 2;
-//  }
-//}
-
-message Empty { }
-
-// Server --------------------------------------------------------------------------------------------------------------
-
-//message ServerMessage {
-//  oneof payload {
-//    VlanSetup vlan_setup = 1;
-//  }
-//}
+// TAP-based clients ---------------------------------------------------------------------------------------------------
 
 message VlanSetup {
   string target_ip = 1;
@@ -34,7 +25,16 @@ message VlanSetup {
   uint32 vlan_id = 3;
 }
 
-// Proxy ---------------------------------------------------------------------------------------------------------------
+message Services {
+  repeated Service services = 1;
+}
+
+message Service {
+  string name = 1;
+  uint32 port = 2;
+}
+
+// Proxy-based clients -------------------------------------------------------------------------------------------------
 
 message ProxyRequest {
   string service_name = 1;
@@ -44,3 +44,7 @@ message Upstream {
   string ip = 1;
   uint32 port = 2;
 }
+
+// Misc ----------------------------------------------------------------------------------------------------------------
+
+message Empty { }

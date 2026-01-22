@@ -5,19 +5,20 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
-#ipnetwork = { version = "0.21.1", features = ["serde"] }
-serde = { version = "1.0.228", default-features = false, features = ["derive"] }
-toml = "0.9.10"
 tonic = { version = "0.14.2", features = ["_tls-any", "tls-native-roots"] }
 prost = "0.14.3"
 tonic-prost = "0.14.2"
 nullnet-liberror = "0.1.1"
 tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
 ctrlc = { version = "3.5.1", features = ["termination"] }
+serde = { version = "1.0.228", features = ["derive"] }
+
+#ipnetwork = { version = "0.21.1", features = ["serde"] }
+#toml = "0.9.10"
 #log = "0.4.29"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
 
-[dev-dependencies]
-serde_test = "1.0.177"
+#[dev-dependencies]
+#serde_test = "1.0.177"
