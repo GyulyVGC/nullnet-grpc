@@ -56,6 +56,9 @@ impl NullnetGrpcImpl {
             .ip();
 
         let req = request.into_inner();
+
+        println!("Received proxy request for '{}'", req.service_name);
+
         let service_socket = self
             .services
             .read()
@@ -105,6 +108,9 @@ impl NullnetGrpcImpl {
             .ip();
 
         let req = request.into_inner();
+
+        println!("Received services list from '{}': {:?}", sender_ip, req.services);
+
         for service in req.services {
             let service_port = u16::try_from(service.port).handle_err(location!())?;
             let service_name = service.name;
@@ -130,7 +136,7 @@ impl NullnetGrpc for NullnetGrpcImpl {
             "Nullnet control channel requested from '{}'",
             request
                 .remote_addr()
-                .map_or("unknown".into(), |addr| addr.to_string())
+                .map_or("unknown".into(), |addr| addr.ip().to_string())
         );
 
         self.control_channel_impl(request)

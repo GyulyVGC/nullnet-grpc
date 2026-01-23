@@ -50,12 +50,16 @@ impl Orchestrator {
                 continue;
             };
 
+            println!("VLAN setup request for {target_ip}: veth {veth_ip} on VLAN {vlan_id} (sending to {dest})");
+
             outbound
                 .send(Ok(msg.clone()))
                 .await
                 .handle_err(location!())?;
 
             let _ = inbound.message().await;
+
+            println!("{dest} acknowledged");
         }
 
         Ok(())
