@@ -23,6 +23,7 @@ message VlanSetup {
   string target_ip = 1;
   string veth_ip = 2;
   uint32 vlan_id = 3;
+  optional HostMapping host_mapping = 4;
 }
 
 message Services {
@@ -32,6 +33,12 @@ message Services {
 message Service {
   string name = 1;
   uint32 port = 2;
+  repeated string dependencies = 3;
+}
+
+message HostMapping {
+  string ip = 1;
+  string name = 2;
 }
 
 // Proxy-based clients -------------------------------------------------------------------------------------------------

@@ -1,17 +1,18 @@
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
-use crate::proto::nullnet_grpc::{Empty, ProxyRequest, Services, Upstream, VlanSetup};
+use crate::proto::nullnet_grpc::{Empty, HostMapping, ProxyRequest, Services, Upstream, VlanSetup};
+use crate::service_info::{ServiceDependency, ServiceInfo};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 pub(crate) struct NullnetGrpcImpl {
-    /// The available services and their host machine addresses
-    services: Arc<RwLock<HashMap<String, SocketAddr>>>,
+    /// The available services
+    services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
     /// Last registered VLAN ID
     last_registered_vlan: Arc<Mutex<u16>>,
     /// Orchestrator to manage TAP-based clients and VLAN setups
@@ -59,40 +60,94 @@ impl NullnetGrpcImpl {
 
         println!("Received proxy request for '{}'", req.service_name);
 
-        let service_socket = self
+        let service_info = self
             .services
             .read()
             .await
             .get(&req.service_name)
-            .copied()
+            .cloned()
             .ok_or("Service not found")
             .handle_err(location!())?;
-        let service_ip = service_socket.ip();
-        let service_port = service_socket.port();
+        let service_ip = service_info.ip;
+        let service_port = service_info.port;
 
-        let vlan_id = {
-            let mut last_id = self.last_registered_vlan.lock().await;
-            *last_id += 1;
-            *last_id
-        };
+        let vlan_id = self.next_vlan_id().await;
         let [a, b] = vlan_id.to_be_bytes();
 
-        let destinations = vec![proxy_ip, service_ip];
-
-        // create dedicated VLAN on the machine where the proxy is running on
-        let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
-        self.orchestrator
-            .send_vlan_setup_requests(proxy_ip, veth_ip, vlan_id, &destinations)
-            .await?;
+        let destinations = vec![service_ip, proxy_ip];
 
         // create dedicated VLAN on the machine where the service is running on
-        let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+        let target_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
         self.orchestrator
-            .send_vlan_setup_requests(service_ip, veth_ip, vlan_id, &destinations)
+            .send_vlan_setup_requests(service_ip, target_veth_ip, vlan_id, &destinations, None)
             .await?;
 
+        // create dedicated VLAN on the machine where the proxy is running on
+        let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+        self.orchestrator
+            .send_vlan_setup_requests(proxy_ip, veth_ip, vlan_id, &destinations, None)
+            .await?;
+
+        // setup dependent services' VLANs
+        for dependency in service_info.dependencies {
+            if dependency.is_setup {
+                continue;
+            }
+
+            let dep_service_info = self
+                .services
+                .read()
+                .await
+                .get(&dependency.name)
+                .cloned()
+                .ok_or(format!("Dependent service '{}' not found", dependency.name))
+                .handle_err(location!())?;
+            let dep_service_ip = dep_service_info.ip;
+
+            let vlan_id = self.next_vlan_id().await;
+            let [a, b] = vlan_id.to_be_bytes();
+
+            let destinations = vec![dep_service_ip, service_ip];
+
+            // create dedicated VLAN on the machine where the dependent service is running on
+            let dep_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
+            self.orchestrator
+                .send_vlan_setup_requests(dep_service_ip, veth_ip, vlan_id, &destinations, None)
+                .await?;
+
+            // create dedicated VLAN on the machine where the main service is running on
+            // also register the dependent service on the main service machine's hosts file
+            let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+            let host_mapping = HostMapping {
+                ip: dep_veth_ip.to_string(),
+                name: dependency.name.clone(),
+            };
+            self.orchestrator
+                .send_vlan_setup_requests(
+                    service_ip,
+                    veth_ip,
+                    vlan_id,
+                    &destinations,
+                    Some(host_mapping),
+                )
+                .await?;
+
+            // mark dependency as set up in the services map
+            self.services
+                .write()
+                .await
+                .entry(req.service_name.clone())
+                .and_modify(|service| {
+                    for dep in &mut service.dependencies {
+                        if dep.name == dependency.name {
+                            dep.is_setup = true;
+                        }
+                    }
+                });
+        }
+
         Ok(Response::new(Upstream {
-            ip: veth_ip.to_string(),
+            ip: target_veth_ip.to_string(),
             port: u32::from(service_port),
         }))
     }
@@ -109,18 +164,39 @@ impl NullnetGrpcImpl {
 
         let req = request.into_inner();
 
-        println!("Received services list from '{}': {:?}", sender_ip, req.services);
+        println!(
+            "Received services list from '{}': {:?}",
+            sender_ip, req.services
+        );
 
         for service in req.services {
             let service_port = u16::try_from(service.port).handle_err(location!())?;
             let service_name = service.name;
+            let service_info = ServiceInfo {
+                ip: sender_ip,
+                port: service_port,
+                dependencies: service
+                    .dependencies
+                    .into_iter()
+                    .map(|name| ServiceDependency {
+                        name,
+                        is_setup: false,
+                    })
+                    .collect(),
+            };
             self.services
                 .write()
                 .await
-                .insert(service_name, SocketAddr::new(sender_ip, service_port));
+                .insert(service_name, service_info);
         }
 
         Ok(Response::new(Empty {}))
+    }
+
+    async fn next_vlan_id(&self) -> u16 {
+        let mut last_id = self.last_registered_vlan.lock().await;
+        *last_id += 1;
+        *last_id
     }
 }
 

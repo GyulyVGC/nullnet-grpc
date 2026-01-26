@@ -1,6 +1,7 @@
 mod nullnet_grpc_impl;
 mod orchestrator;
 mod proto;
+mod service_info;
 
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpcServer;

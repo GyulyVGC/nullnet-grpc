@@ -7,6 +7,8 @@ pub struct VlanSetup {
     pub veth_ip: ::prost::alloc::string::String,
     #[prost(uint32, tag = "3")]
     pub vlan_id: u32,
+    #[prost(message, optional, tag = "4")]
+    pub host_mapping: ::core::option::Option<HostMapping>,
 }
 #[derive(serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -21,6 +23,15 @@ pub struct Service {
     pub name: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
     pub port: u32,
+    #[prost(string, repeated, tag = "3")]
+    pub dependencies: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HostMapping {
+    #[prost(string, tag = "1")]
+    pub ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProxyRequest {

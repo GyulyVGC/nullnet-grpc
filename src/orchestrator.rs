@@ -1,4 +1,4 @@
-use crate::proto::nullnet_grpc::{Empty, VlanSetup};
+use crate::proto::nullnet_grpc::{Empty, HostMapping, VlanSetup};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -37,11 +37,13 @@ impl Orchestrator {
         veth_ip: IpAddr,
         vlan_id: u16,
         destinations: &Vec<IpAddr>,
+        host_mapping: Option<HostMapping>,
     ) -> Result<(), Error> {
         let msg = VlanSetup {
             target_ip: target_ip.to_string(),
             vlan_id: u32::from(vlan_id),
             veth_ip: veth_ip.to_string(),
+            host_mapping,
         };
 
         let mut clients = self.clients.lock().await;
@@ -50,7 +52,9 @@ impl Orchestrator {
                 continue;
             };
 
-            println!("VLAN setup request for {target_ip}: veth {veth_ip} on VLAN {vlan_id} (sending to {dest})");
+            println!(
+                "VLAN setup request for {target_ip}: veth {veth_ip} on VLAN {vlan_id} (sending to {dest})"
+            );
 
             outbound
                 .send(Ok(msg.clone()))
