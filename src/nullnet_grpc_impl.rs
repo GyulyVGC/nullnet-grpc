@@ -112,7 +112,7 @@ impl NullnetGrpcImpl {
             // create dedicated VLAN on the machine where the dependent service is running on
             let dep_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
             self.orchestrator
-                .send_vlan_setup_requests(dep_service_ip, veth_ip, vlan_id, &destinations, None)
+                .send_vlan_setup_requests(dep_service_ip, dep_veth_ip, vlan_id, &destinations, None)
                 .await?;
 
             // create dedicated VLAN on the machine where the main service is running on
