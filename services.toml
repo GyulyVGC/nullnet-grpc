@@ -1,0 +1,3 @@
+[[services]]
+name = "color.com"
+dependencies = ["fs.color.com"]

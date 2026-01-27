@@ -33,7 +33,6 @@ message Services {
 message Service {
   string name = 1;
   uint32 port = 2;
-  repeated string dependencies = 3;
 }
 
 message HostMapping {
@@ -44,7 +43,8 @@ message HostMapping {
 // Proxy-based clients -------------------------------------------------------------------------------------------------
 
 message ProxyRequest {
-  string service_name = 1;
+  string client_ip = 1;
+  string service_name = 2;
 }
 
 message Upstream {

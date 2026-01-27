@@ -1,7 +1,7 @@
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{Empty, HostMapping, ProxyRequest, Services, Upstream, VlanSetup};
-use crate::service_info::{ServiceDependency, ServiceInfo};
+use crate::service_info::{ServiceInfo, ServicesToml};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -20,12 +20,19 @@ pub(crate) struct NullnetGrpcImpl {
 }
 
 impl NullnetGrpcImpl {
-    pub fn new() -> Self {
-        NullnetGrpcImpl {
-            services: Arc::new(RwLock::new(HashMap::new())),
+    pub async fn new() -> Result<Self, Error> {
+        // read services from file
+        let services_toml_str = tokio::fs::read_to_string("services.toml")
+            .await
+            .handle_err(location!())?;
+        let services_toml: ServicesToml =
+            toml::from_str(&services_toml_str).handle_err(location!())?;
+
+        Ok(NullnetGrpcImpl {
+            services: Arc::new(RwLock::new(services_toml.into_map())),
             last_registered_vlan: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
-        }
+        })
     }
 
     async fn control_channel_impl(
@@ -58,18 +65,63 @@ impl NullnetGrpcImpl {
 
         let req = request.into_inner();
 
-        println!("Received proxy request for '{}'", req.service_name);
+        let client_ip: IpAddr = req.client_ip.parse().handle_err(location!())?;
+        let service_name = req.service_name;
+
+        println!("Received proxy request for '{service_name}'");
 
         let service_info = self
             .services
             .read()
             .await
-            .get(&req.service_name)
+            .get(&service_name)
             .cloned()
             .ok_or("Service not found")
             .handle_err(location!())?;
-        let service_ip = service_info.ip;
-        let service_port = service_info.port;
+
+        let Some(registered) = service_info.as_registered() else {
+            Err("Service is not registered").handle_err(location!())?
+        };
+
+        if let Some(upstream) = registered.is_client_setup(client_ip) {
+            println!("'{client_ip}' ---> '{service_name}' is already set up");
+            return Ok(Response::new(upstream));
+        }
+
+        // setup dependent services' VLANs
+        if !registered.are_dependencies_setup() {
+            for (h1, (h2, dep_name)) in registered.dependency_chain(&self.services).await? {
+                let vlan_id = self.next_vlan_id().await;
+                let [a, b] = vlan_id.to_be_bytes();
+
+                let destinations = vec![h2, h1];
+
+                // create dedicated VLAN on the machine where the dependent service is running on
+                let dep_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
+                self.orchestrator
+                    .send_vlan_setup_requests(h2, dep_veth_ip, vlan_id, &destinations, None)
+                    .await?;
+
+                // create dedicated VLAN on the machine where the parent service is running on
+                // also register the dependent service on the main service machine's hosts file
+                let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+                let host_mapping = HostMapping {
+                    ip: dep_veth_ip.to_string(),
+                    name: dep_name.clone(),
+                };
+                self.orchestrator
+                    .send_vlan_setup_requests(
+                        h1,
+                        veth_ip,
+                        vlan_id,
+                        &destinations,
+                        Some(host_mapping),
+                    )
+                    .await?;
+            }
+        }
+
+        let (service_ip, service_port) = registered.ip_port();
 
         let vlan_id = self.next_vlan_id().await;
         let [a, b] = vlan_id.to_be_bytes();
@@ -88,63 +140,16 @@ impl NullnetGrpcImpl {
             .send_vlan_setup_requests(proxy_ip, veth_ip, vlan_id, &destinations, None)
             .await?;
 
-        // setup dependent services' VLANs
-        for dependency in service_info.dependencies {
-            if dependency.is_setup {
-                continue;
-            }
-
-            let dep_service_info = self
-                .services
-                .read()
-                .await
-                .get(&dependency.name)
-                .cloned()
-                .ok_or(format!("Dependent service '{}' not found", dependency.name))
-                .handle_err(location!())?;
-            let dep_service_ip = dep_service_info.ip;
-
-            let vlan_id = self.next_vlan_id().await;
-            let [a, b] = vlan_id.to_be_bytes();
-
-            let destinations = vec![dep_service_ip, service_ip];
-
-            // create dedicated VLAN on the machine where the dependent service is running on
-            let dep_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
-            self.orchestrator
-                .send_vlan_setup_requests(dep_service_ip, dep_veth_ip, vlan_id, &destinations, None)
-                .await?;
-
-            // create dedicated VLAN on the machine where the main service is running on
-            // also register the dependent service on the main service machine's hosts file
-            let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
-            let host_mapping = HostMapping {
-                ip: dep_veth_ip.to_string(),
-                name: dependency.name.clone(),
-            };
-            self.orchestrator
-                .send_vlan_setup_requests(
-                    service_ip,
-                    veth_ip,
-                    vlan_id,
-                    &destinations,
-                    Some(host_mapping),
-                )
-                .await?;
-
-            // mark dependency as set up in the services map
-            self.services
-                .write()
-                .await
-                .entry(req.service_name.clone())
-                .and_modify(|service| {
-                    for dep in &mut service.dependencies {
-                        if dep.name == dependency.name {
-                            dep.is_setup = true;
-                        }
-                    }
-                });
-        }
+        // register the client IP to veth IP mapping
+        self.services
+            .write()
+            .await
+            .entry(service_name)
+            .and_modify(|si| {
+                if let ServiceInfo::Registered(reg) = si {
+                    reg.setup_client(client_ip, target_veth_ip);
+                }
+            });
 
         Ok(Response::new(Upstream {
             ip: target_veth_ip.to_string(),
@@ -172,22 +177,13 @@ impl NullnetGrpcImpl {
         for service in req.services {
             let service_port = u16::try_from(service.port).handle_err(location!())?;
             let service_name = service.name;
-            let service_info = ServiceInfo {
-                ip: sender_ip,
-                port: service_port,
-                dependencies: service
-                    .dependencies
-                    .into_iter()
-                    .map(|name| ServiceDependency {
-                        name,
-                        is_setup: false,
-                    })
-                    .collect(),
-            };
             self.services
                 .write()
                 .await
-                .insert(service_name, service_info);
+                .entry(service_name)
+                .and_modify(|si| {
+                    *si = si.clone().register(sender_ip, service_port);
+                });
         }
 
         Ok(Response::new(Empty {}))

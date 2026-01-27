@@ -23,8 +23,6 @@ pub struct Service {
     pub name: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
     pub port: u32,
-    #[prost(string, repeated, tag = "3")]
-    pub dependencies: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HostMapping {
@@ -36,6 +34,8 @@ pub struct HostMapping {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProxyRequest {
     #[prost(string, tag = "1")]
+    pub client_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
     pub service_name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
