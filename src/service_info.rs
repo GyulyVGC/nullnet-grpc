@@ -13,7 +13,7 @@ pub(crate) enum ServiceInfo {
 }
 
 impl ServiceInfo {
-    pub fn new(dependencies: Vec<ServiceDependency>) -> Self {
+    pub fn new(dependencies: Vec<String>) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(dependencies))
     }
 
@@ -34,11 +34,11 @@ impl ServiceInfo {
 
 #[derive(Clone)]
 pub(crate) struct UnregisteredServiceInfo {
-    dependencies: Vec<ServiceDependency>,
+    dependencies: Vec<String>,
 }
 
 impl UnregisteredServiceInfo {
-    fn new(dependencies: Vec<ServiceDependency>) -> Self {
+    fn new(dependencies: Vec<String>) -> Self {
         Self { dependencies }
     }
 
@@ -59,7 +59,7 @@ pub(crate) struct RegisteredServiceInfo {
     /// Port of the service.
     port: u16,
     /// Dependencies of the service.
-    dependencies: Vec<ServiceDependency>,
+    dependencies: Vec<String>,
     /// Mapping from browser IP to veth IP.
     clients: HashMap<IpAddr, IpAddr>,
 }
@@ -67,15 +67,15 @@ pub(crate) struct RegisteredServiceInfo {
 impl RegisteredServiceInfo {
     pub(crate) async fn dependency_chain(
         &self,
-        services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
+        dependencies: &Arc<RwLock<HashMap<String, DependencyInfo>>>,
     ) -> Result<Vec<(IpAddr, (IpAddr, String))>, Error> {
         let mut chain = Vec::new();
         let mut current_ip = self.ip;
         for dep in &self.dependencies {
-            let ServiceInfo::Registered(dep_reg) = services
+            let DependencyInfo::Registered(dep_reg) = dependencies
                 .read()
                 .await
-                .get(&dep.name)
+                .get(dep)
                 .cloned()
                 .ok_or("Dependency service not found")
                 .handle_err(location!())?
@@ -83,7 +83,7 @@ impl RegisteredServiceInfo {
                 return Err("Dependency service is not registered yet").handle_err(location!());
             };
             let dep_ip = dep_reg.ip;
-            chain.push((current_ip, (dep_ip, dep.name.clone())));
+            chain.push((current_ip, (dep_ip, dep.clone())));
             current_ip = dep_ip;
         }
 
@@ -120,40 +120,57 @@ impl RegisteredServiceInfo {
 }
 
 #[derive(Clone)]
-pub(crate) struct ServiceDependency {
-    name: String,
+pub(crate) enum DependencyInfo {
+    Unregistered,
+    Registered(RegisteredDependencyInfo),
 }
 
-impl ServiceDependency {
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-        }
+impl DependencyInfo {
+    pub fn registered(ip: IpAddr) -> DependencyInfo {
+        DependencyInfo::Registered(RegisteredDependencyInfo { ip })
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone)]
+pub(crate) struct RegisteredDependencyInfo {
+    /// IP address of the host.
+    ip: IpAddr,
+    // Port of the service. TODO: ports are not used at the moment for dependencies
+    // port: u16,
+}
+
+#[derive(Deserialize, Debug)]
 pub(crate) struct ServicesToml {
     services: Vec<ServiceToml>,
 }
 
 impl ServicesToml {
-    pub fn into_map(self) -> HashMap<String, ServiceInfo> {
+    pub fn dependencies_map(&self) -> HashMap<String, DependencyInfo> {
         self.services
-            .into_iter()
-            .map(|service| {
-                let dependencies = service
+            .iter()
+            .flat_map(|service| {
+                service
                     .dependencies
-                    .into_iter()
-                    .map(|dep_name| ServiceDependency::new(&dep_name))
-                    .collect();
-                (service.name, ServiceInfo::new(dependencies))
+                    .iter()
+                    .map(|dep| (dep.clone(), DependencyInfo::Unregistered))
+            })
+            .collect()
+    }
+
+    pub fn services_map(&self) -> HashMap<String, ServiceInfo> {
+        self.services
+            .iter()
+            .map(|service| {
+                (
+                    service.name.clone(),
+                    ServiceInfo::new(service.dependencies.clone()),
+                )
             })
             .collect()
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub(crate) struct ServiceToml {
     name: String,
     dependencies: Vec<String>,

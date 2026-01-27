@@ -8,7 +8,7 @@ async-trait = "0.1.89"
 tonic = { version = "0.14.2", features = ["_tls-any", "tls-native-roots"] }
 prost = "0.14.3"
 tonic-prost = "0.14.2"
-nullnet-liberror = "0.1.1"
+nullnet-liberror = { git = "https://github.com/NullNet-ai/libguard.git", branch = "nullnet-liberror-print" }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "fs"] }
 ctrlc = { version = "3.5.1", features = ["termination"] }
 serde = { version = "1.0.228", features = ["derive"] }

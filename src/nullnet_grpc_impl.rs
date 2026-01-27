@@ -1,7 +1,7 @@
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{Empty, HostMapping, ProxyRequest, Services, Upstream, VlanSetup};
-use crate::service_info::{ServiceInfo, ServicesToml};
+use crate::service_info::{DependencyInfo, ServiceInfo, ServicesToml};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -13,6 +13,8 @@ use tonic::{Request, Response, Status, Streaming};
 pub(crate) struct NullnetGrpcImpl {
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
+    /// The dependencies of the services
+    dependencies: Arc<RwLock<HashMap<String, DependencyInfo>>>,
     /// Last registered VLAN ID
     last_registered_vlan: Arc<Mutex<u16>>,
     /// Orchestrator to manage TAP-based clients and VLAN setups
@@ -27,9 +29,14 @@ impl NullnetGrpcImpl {
             .handle_err(location!())?;
         let services_toml: ServicesToml =
             toml::from_str(&services_toml_str).handle_err(location!())?;
+        println!("Loaded services: {services_toml:?}");
+
+        let services = services_toml.services_map();
+        let dependencies = services_toml.dependencies_map();
 
         Ok(NullnetGrpcImpl {
-            services: Arc::new(RwLock::new(services_toml.into_map())),
+            services: Arc::new(RwLock::new(services)),
+            dependencies: Arc::new(RwLock::new(dependencies)),
             last_registered_vlan: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
         })
@@ -90,7 +97,7 @@ impl NullnetGrpcImpl {
 
         // setup dependent services' VLANs
         if !registered.are_dependencies_setup() {
-            for (h1, (h2, dep_name)) in registered.dependency_chain(&self.services).await? {
+            for (h1, (h2, dep_name)) in registered.dependency_chain(&self.dependencies).await? {
                 let vlan_id = self.next_vlan_id().await;
                 let [a, b] = vlan_id.to_be_bytes();
 
@@ -180,9 +187,17 @@ impl NullnetGrpcImpl {
             self.services
                 .write()
                 .await
-                .entry(service_name)
+                .entry(service_name.clone())
                 .and_modify(|si| {
                     *si = si.clone().register(sender_ip, service_port);
+                });
+
+            self.dependencies
+                .write()
+                .await
+                .entry(service_name)
+                .and_modify(|di| {
+                    *di = DependencyInfo::registered(sender_ip);
                 });
         }
 
