@@ -1,6 +1,6 @@
 use crate::proto::nullnet_grpc::{Empty, HostMapping, VlanSetup};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -36,9 +36,12 @@ impl Orchestrator {
         target_ip: IpAddr,
         veth_ip: IpAddr,
         vlan_id: u16,
-        destinations: &Vec<IpAddr>,
+        destinations: &[IpAddr],
         host_mapping: Option<HostMapping>,
     ) -> Result<(), Error> {
+        // remove duplicates from destinations (in case services are hosted on the same machine)
+        let destinations: HashSet<IpAddr> = destinations.iter().copied().collect();
+
         let msg = VlanSetup {
             target_ip: target_ip.to_string(),
             vlan_id: u32::from(vlan_id),
@@ -47,7 +50,7 @@ impl Orchestrator {
         };
 
         let mut clients = self.clients.lock().await;
-        for dest in destinations {
+        for dest in &destinations {
             let Some((inbound, outbound)) = clients.get_mut(dest) else {
                 continue;
             };

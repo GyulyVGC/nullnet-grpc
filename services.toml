@@ -1,3 +1,7 @@
 [[services]]
 name = "color.com"
-dependencies = ["fs.color.com"]
+dependencies = ["dumb.color.com", "fs.color.com"]
+
+[[services]]
+name = "fs.color.com"
+dependencies = []

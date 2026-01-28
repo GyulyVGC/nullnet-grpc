@@ -1,9 +1,10 @@
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{Empty, HostMapping, ProxyRequest, Services, Upstream, VlanSetup};
-use crate::service_info::{DependencyInfo, ServiceInfo, ServicesToml};
+use crate::service_info::{ServiceInfo, ServicesToml};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc};
@@ -13,8 +14,6 @@ use tonic::{Request, Response, Status, Streaming};
 pub(crate) struct NullnetGrpcImpl {
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
-    /// The dependencies of the services
-    dependencies: Arc<RwLock<HashMap<String, DependencyInfo>>>,
     /// Last registered VLAN ID
     last_registered_vlan: Arc<Mutex<u16>>,
     /// Orchestrator to manage TAP-based clients and VLAN setups
@@ -31,15 +30,16 @@ impl NullnetGrpcImpl {
             toml::from_str(&services_toml_str).handle_err(location!())?;
         println!("Loaded services: {services_toml:?}");
 
-        let services = services_toml.services_map();
-        let dependencies = services_toml.dependencies_map();
-
-        Ok(NullnetGrpcImpl {
-            services: Arc::new(RwLock::new(services)),
-            dependencies: Arc::new(RwLock::new(dependencies)),
+        let ret = NullnetGrpcImpl {
+            services: Arc::new(RwLock::new(services_toml.services_map())),
             last_registered_vlan: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
-        })
+        };
+
+        // regenerate the service graphviz for debugging
+        let _ = ret.generate_graphviz().await;
+
+        Ok(ret)
     }
 
     async fn control_channel_impl(
@@ -90,42 +90,56 @@ impl NullnetGrpcImpl {
             Err("Service is not registered").handle_err(location!())?
         };
 
-        if let Some(upstream) = registered.is_client_setup(client_ip) {
+        if !registered.is_proxy_reachable() {
+            Err("Service is not reachable via proxy").handle_err(location!())?;
+        }
+
+        if let Some(upstream) = registered.is_proxy_client_setup(client_ip) {
             println!("'{client_ip}' ---> '{service_name}' is already set up");
             return Ok(Response::new(upstream));
         }
 
         // setup dependent services' VLANs
-        if !registered.are_dependencies_setup() {
-            for (h1, (h2, dep_name)) in registered.dependency_chain(&self.dependencies).await? {
-                let vlan_id = self.next_vlan_id().await;
-                let [a, b] = vlan_id.to_be_bytes();
-
-                let destinations = vec![h2, h1];
-
-                // create dedicated VLAN on the machine where the dependent service is running on
-                let dep_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
-                self.orchestrator
-                    .send_vlan_setup_requests(h2, dep_veth_ip, vlan_id, &destinations, None)
-                    .await?;
-
-                // create dedicated VLAN on the machine where the parent service is running on
-                // also register the dependent service on the main service machine's hosts file
-                let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
-                let host_mapping = HostMapping {
-                    ip: dep_veth_ip.to_string(),
-                    name: dep_name.clone(),
-                };
-                self.orchestrator
-                    .send_vlan_setup_requests(
-                        h1,
-                        veth_ip,
-                        vlan_id,
-                        &destinations,
-                        Some(host_mapping),
-                    )
-                    .await?;
+        for ((h1, h1_name), (h2, h2_name)) in registered
+            .dependency_chain(service_name.clone(), &self.services)
+            .await?
+        {
+            // check if the link is already set up
+            let h2_service = self.services.read().await.get(&h2_name).cloned();
+            if let Some(ServiceInfo::Registered(reg)) = h2_service
+                && reg.is_service_client_setup(&h1_name)
+            {
+                continue;
             }
+
+            let vlan_id = self.next_vlan_id().await;
+            let [a, b] = vlan_id.to_be_bytes();
+
+            let destinations = vec![h2, h1];
+
+            // create dedicated VLAN on the machine where the dependent service is running on
+            let dep_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
+            self.orchestrator
+                .send_vlan_setup_requests(h2, dep_veth_ip, vlan_id, &destinations, None)
+                .await?;
+
+            // create dedicated VLAN on the machine where the parent service is running on
+            // also register the dependent service on the main service machine's hosts file
+            let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+            let host_mapping = HostMapping {
+                ip: dep_veth_ip.to_string(),
+                name: h2_name.clone(),
+            };
+            self.orchestrator
+                .send_vlan_setup_requests(h1, veth_ip, vlan_id, &destinations, Some(host_mapping))
+                .await?;
+
+            // register the link between the two services
+            self.services.write().await.entry(h2_name).and_modify(|si| {
+                if let ServiceInfo::Registered(reg) = si {
+                    reg.add_service_client(h1_name);
+                }
+            });
         }
 
         let (service_ip, service_port) = registered.ip_port();
@@ -154,9 +168,12 @@ impl NullnetGrpcImpl {
             .entry(service_name)
             .and_modify(|si| {
                 if let ServiceInfo::Registered(reg) = si {
-                    reg.setup_client(client_ip, target_veth_ip);
+                    reg.add_proxy_client(client_ip, target_veth_ip);
                 }
             });
+
+        // regenerate the service graphviz for debugging
+        let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Upstream {
             ip: target_veth_ip.to_string(),
@@ -168,6 +185,8 @@ impl NullnetGrpcImpl {
         &self,
         request: Request<Services>,
     ) -> Result<Response<Empty>, Error> {
+        // TODO: first unregister previous services and dependencies from this sender_ip
+
         let sender_ip = request
             .remote_addr()
             .ok_or("Could not get remote address for services list request")
@@ -191,15 +210,10 @@ impl NullnetGrpcImpl {
                 .and_modify(|si| {
                     *si = si.clone().register(sender_ip, service_port);
                 });
-
-            self.dependencies
-                .write()
-                .await
-                .entry(service_name)
-                .and_modify(|di| {
-                    *di = DependencyInfo::registered(sender_ip);
-                });
         }
+
+        // regenerate the service graphviz for debugging
+        let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Empty {}))
     }
@@ -208,6 +222,28 @@ impl NullnetGrpcImpl {
         let mut last_id = self.last_registered_vlan.lock().await;
         *last_id += 1;
         *last_id
+    }
+
+    async fn generate_graphviz(&self) -> Result<(), Error> {
+        let services = self.services.read().await.clone();
+        let mut graphviz = String::from("digraph G {\n");
+        for (name, info) in services {
+            if let ServiceInfo::Registered(registered) = info {
+                for pc in &registered.proxy_clients() {
+                    writeln!(graphviz, "\t\"{pc}\" -> \"{name}\";").handle_err(location!())?;
+                }
+
+                for sc in &registered.service_clients() {
+                    writeln!(graphviz, "\t\"{sc}\" -> \"{name}\";").handle_err(location!())?;
+                }
+            }
+        }
+        graphviz.push_str("}\n");
+        tokio::fs::write("graph.dot", graphviz)
+            .await
+            .handle_err(location!())?;
+
+        Ok(())
     }
 }
 
