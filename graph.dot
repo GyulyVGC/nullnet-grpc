@@ -1,2 +1,17 @@
 digraph G {
+	bgcolor=grey10;
+	node [color=white, fontcolor=white];
+	edge [color=white];
+
+	"color.com" [style=solid, color=green];
+	"192.168.1.101" -> "color.com";
+	"192.168.1.106" -> "color.com";
+
+	"fs.color.com" [style=solid, color=green];
+	"192.168.1.101" -> "fs.color.com";
+	"192.168.1.103" -> "fs.color.com";
+	"dumb.color.com" -> "fs.color.com";
+
+	"dumb.color.com" [style=dashed, color=green];
+	"color.com" -> "dumb.color.com";
 }

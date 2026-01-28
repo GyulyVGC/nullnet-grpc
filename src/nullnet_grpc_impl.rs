@@ -226,8 +226,15 @@ impl NullnetGrpcImpl {
 
     async fn generate_graphviz(&self) -> Result<(), Error> {
         let services = self.services.read().await.clone();
-        let mut graphviz = String::from("digraph G {\n");
+        let mut graphviz = String::from(
+            "digraph G {\n\
+                \tbgcolor=grey10;\n\
+                \tnode [color=white, fontcolor=white];\n\
+                \tedge [color=white];\n\n",
+        );
         for (name, info) in services {
+            let style = info.graphviz_style();
+            writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!())?;
             if let ServiceInfo::Registered(registered) = info {
                 for pc in &registered.proxy_clients() {
                     writeln!(graphviz, "\t\"{pc}\" -> \"{name}\";").handle_err(location!())?;
@@ -237,8 +244,10 @@ impl NullnetGrpcImpl {
                     writeln!(graphviz, "\t\"{sc}\" -> \"{name}\";").handle_err(location!())?;
                 }
             }
+            graphviz.push('\n');
         }
-        graphviz.push_str("}\n");
+        graphviz = graphviz.trim().to_string();
+        graphviz.push_str("\n}\n");
         tokio::fs::write("graph.dot", graphviz)
             .await
             .handle_err(location!())?;
