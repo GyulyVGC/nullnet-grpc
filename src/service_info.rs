@@ -14,24 +14,17 @@ pub(crate) enum ServiceInfo {
 }
 
 impl ServiceInfo {
-    pub fn new(dependencies: Vec<String>, is_proxy_reachable: bool) -> Self {
+    pub(crate) fn new(dependencies: Vec<String>, is_proxy_reachable: bool) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
             dependencies,
             is_proxy_reachable,
         ))
     }
 
-    pub fn register(self, ip: IpAddr, port: u16) -> ServiceInfo {
+    pub(crate) fn register(self, ip: IpAddr, port: u16) -> ServiceInfo {
         match self {
             ServiceInfo::Unregistered(unreg) => ServiceInfo::Registered(unreg.register(ip, port)),
             ServiceInfo::Registered(reg) => Self::Registered(reg.re_register(ip, port)),
-        }
-    }
-
-    pub fn as_registered(&self) -> Option<&RegisteredServiceInfo> {
-        match self {
-            ServiceInfo::Unregistered(_) => None,
-            ServiceInfo::Registered(reg) => Some(reg),
         }
     }
 
@@ -43,6 +36,13 @@ impl ServiceInfo {
             ServiceInfo::Unregistered(_) => "[style=dashed, color=red]",
             ServiceInfo::Registered(reg) if reg.is_proxy_reachable => "[style=solid, color=green]",
             ServiceInfo::Registered(_) => "[style=dashed, color=green]",
+        }
+    }
+
+    pub(crate) fn is_proxy_reachable(&self) -> bool {
+        match self {
+            ServiceInfo::Unregistered(unreg) => unreg.is_proxy_reachable,
+            ServiceInfo::Registered(reg) => reg.is_proxy_reachable,
         }
     }
 }
@@ -128,6 +128,26 @@ impl RegisteredServiceInfo {
         (self.ip, self.port)
     }
 
+    pub(crate) fn service_clients(&self) -> Vec<String> {
+        self.clients.service_clients()
+    }
+
+    pub(crate) fn add_service_client(&mut self, service: String) {
+        self.clients.add_service_client(service);
+    }
+
+    pub(crate) fn is_service_client_setup(&self, service_name: &str) -> bool {
+        self.clients.is_service_client_setup(service_name)
+    }
+
+    pub(crate) fn proxy_clients(&self) -> Vec<IpAddr> {
+        self.clients.proxy_clients()
+    }
+
+    pub(crate) fn add_proxy_client(&mut self, client_ip: IpAddr, veth_ip: IpAddr) {
+        self.clients.add_proxy_client(client_ip, veth_ip);
+    }
+
     pub(crate) fn is_proxy_client_setup(&self, client_ip: IpAddr) -> Option<Upstream> {
         self.clients
             .is_proxy_client_setup(client_ip)
@@ -135,30 +155,6 @@ impl RegisteredServiceInfo {
                 ip: veth_ip.to_string(),
                 port: u32::from(self.port),
             })
-    }
-
-    pub(crate) fn is_service_client_setup(&self, service_name: &str) -> bool {
-        self.clients.is_service_client_setup(service_name)
-    }
-
-    pub(crate) fn is_proxy_reachable(&self) -> bool {
-        self.is_proxy_reachable
-    }
-
-    pub(crate) fn add_proxy_client(&mut self, client_ip: IpAddr, veth_ip: IpAddr) {
-        self.clients.add_proxy_client(client_ip, veth_ip);
-    }
-
-    pub(crate) fn add_service_client(&mut self, service: String) {
-        self.clients.add_service_client(service);
-    }
-
-    pub(crate) fn proxy_clients(&self) -> Vec<IpAddr> {
-        self.clients.proxy_clients()
-    }
-
-    pub(crate) fn service_clients(&self) -> Vec<String> {
-        self.clients.service_clients()
     }
 }
 
@@ -168,7 +164,7 @@ pub(crate) struct ServicesToml {
 }
 
 impl ServicesToml {
-    pub fn services_map(&self) -> HashMap<String, ServiceInfo> {
+    pub(crate) fn services_map(&self) -> HashMap<String, ServiceInfo> {
         let mut ret_val: HashMap<String, ServiceInfo> = HashMap::new();
 
         // first insert proxy-reachable services

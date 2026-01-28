@@ -86,13 +86,13 @@ impl NullnetGrpcImpl {
             .ok_or("Service not found")
             .handle_err(location!())?;
 
-        let Some(registered) = service_info.as_registered() else {
-            Err("Service is not registered").handle_err(location!())?
-        };
-
-        if !registered.is_proxy_reachable() {
+        if !service_info.is_proxy_reachable() {
             Err("Service is not reachable via proxy").handle_err(location!())?;
         }
+
+        let ServiceInfo::Registered(registered) = service_info else {
+            Err("Service is not registered").handle_err(location!())?
+        };
 
         if let Some(upstream) = registered.is_proxy_client_setup(client_ip) {
             println!("'{client_ip}' ---> '{service_name}' is already set up");
