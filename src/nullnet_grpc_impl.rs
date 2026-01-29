@@ -194,8 +194,6 @@ impl NullnetGrpcImpl {
         &self,
         request: Request<Services>,
     ) -> Result<Response<Empty>, Error> {
-        // TODO: first unregister previous services and dependencies from this sender_ip
-
         let sender_ip = request
             .remote_addr()
             .ok_or("Could not get remote address for services list request")
@@ -209,20 +207,45 @@ impl NullnetGrpcImpl {
             sender_ip, req.services
         );
 
-        // lock services for modification
+        // get services previously registered from this sender_ip
+        let previously_registered: Vec<String> = self
+            .services
+            .read()
+            .await
+            .iter()
+            .filter_map(|(name, si)| {
+                if let ServiceInfo::Registered(reg) = si {
+                    let (ip, _) = reg.ip_port();
+                    if ip == sender_ip {
+                        return Some(name.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // get services that are no longer present
+        let to_be_unregistered: Vec<String> = previously_registered
+            .into_iter()
+            .filter(|name| !req.services.iter().any(|s| s.name == *name))
+            .collect();
+
         let mut services_mut = self.services.write().await;
 
-        // first unregister previous services from this sender_ip
-        for (_, si) in services_mut.iter_mut() {
-            if let ServiceInfo::Registered(reg) = si {
-                let (ip, _) = reg.ip_port();
-                if ip == sender_ip {
-                    si.unregister();
+        // unregister services that are no longer present
+        for service_name in to_be_unregistered {
+            services_mut.entry(service_name).and_modify(|si| {
+                // re-check that it's still registered from this sender_ip to avoid race conditions
+                if let ServiceInfo::Registered(reg) = si {
+                    let (ip, _) = reg.ip_port();
+                    if ip == sender_ip {
+                        si.unregister();
+                    }
                 }
-            }
+            });
         }
 
-        // then re-register services that are still sent from this sender_ip
+        // re-register services that are still present
         for service in req.services {
             let service_port = u16::try_from(service.port).handle_err(location!())?;
             let service_name = service.name;
