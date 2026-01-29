@@ -21,10 +21,26 @@ impl ServiceInfo {
         ))
     }
 
-    pub(crate) fn register(self, ip: IpAddr, port: u16) -> ServiceInfo {
-        match self {
-            ServiceInfo::Unregistered(unreg) => ServiceInfo::Registered(unreg.register(ip, port)),
-            ServiceInfo::Registered(reg) => Self::Registered(reg.re_register(ip, port)),
+    pub(crate) fn register(&mut self, ip: IpAddr, port: u16) {
+        let is_proxy_reachable = self.is_proxy_reachable();
+        let dependencies = self.dependencies();
+        let clients = self.clients();
+
+        *self = ServiceInfo::Registered(RegisteredServiceInfo {
+            dependencies,
+            is_proxy_reachable,
+            ip,
+            port,
+            clients,
+        });
+    }
+
+    pub(crate) fn unregister(&mut self) {
+        if let ServiceInfo::Registered(reg) = self {
+            *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
+                reg.dependencies.clone(),
+                reg.is_proxy_reachable,
+            ));
         }
     }
 
@@ -45,6 +61,20 @@ impl ServiceInfo {
             ServiceInfo::Registered(reg) => reg.is_proxy_reachable,
         }
     }
+
+    fn dependencies(&self) -> Vec<String> {
+        match self {
+            ServiceInfo::Unregistered(unreg) => unreg.dependencies.clone(),
+            ServiceInfo::Registered(reg) => reg.dependencies.clone(),
+        }
+    }
+
+    fn clients(&self) -> Clients {
+        match self {
+            ServiceInfo::Unregistered(_) => Clients::default(),
+            ServiceInfo::Registered(reg) => reg.clients.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -58,16 +88,6 @@ impl UnregisteredServiceInfo {
         Self {
             dependencies,
             is_proxy_reachable,
-        }
-    }
-
-    fn register(self, ip: IpAddr, port: u16) -> RegisteredServiceInfo {
-        RegisteredServiceInfo {
-            ip,
-            port,
-            is_proxy_reachable: self.is_proxy_reachable,
-            dependencies: self.dependencies,
-            clients: Clients::default(),
         }
     }
 }
@@ -112,16 +132,6 @@ impl RegisteredServiceInfo {
         }
 
         Ok(chain)
-    }
-
-    fn re_register(self, ip: IpAddr, port: u16) -> Self {
-        Self {
-            dependencies: self.dependencies,
-            is_proxy_reachable: self.is_proxy_reachable,
-            ip,
-            port,
-            clients: self.clients,
-        }
     }
 
     pub(crate) fn ip_port(&self) -> (IpAddr, u16) {

@@ -209,17 +209,29 @@ impl NullnetGrpcImpl {
             sender_ip, req.services
         );
 
+        // lock services for modification
+        let mut services_mut = self.services.write().await;
+
+        // first unregister previous services from this sender_ip
+        for (_, si) in services_mut.iter_mut() {
+            if let ServiceInfo::Registered(reg) = si {
+                let (ip, _) = reg.ip_port();
+                if ip == sender_ip {
+                    si.unregister();
+                }
+            }
+        }
+
+        // then re-register services that are still sent from this sender_ip
         for service in req.services {
             let service_port = u16::try_from(service.port).handle_err(location!())?;
             let service_name = service.name;
-            self.services
-                .write()
-                .await
-                .entry(service_name.clone())
-                .and_modify(|si| {
-                    *si = si.clone().register(sender_ip, service_port);
-                });
+            services_mut.entry(service_name.clone()).and_modify(|si| {
+                si.register(sender_ip, service_port);
+            });
         }
+
+        drop(services_mut);
 
         // regenerate the service graphviz for debugging
         let _ = self.generate_graphviz().await;
