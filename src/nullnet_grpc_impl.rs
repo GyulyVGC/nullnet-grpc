@@ -1,3 +1,4 @@
+use crate::clients::ClientInfo;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{Empty, HostMapping, ProxyRequest, Services, Upstream, VlanSetup};
@@ -32,7 +33,7 @@ impl NullnetGrpcImpl {
 
         let ret = NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services_toml.services_map())),
-            last_registered_vlan: Arc::new(Mutex::new(100)),
+            last_registered_vlan: Arc::new(Mutex::new(0)),
             orchestrator: Orchestrator::new(),
         };
 
@@ -117,27 +118,34 @@ impl NullnetGrpcImpl {
 
             let destinations = vec![h2, h1];
 
-            // create dedicated VLAN on the machine where the dependent service is running on
-            let dep_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
+            // create dedicated VLAN on the machine where the "server" service is running on
+            let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
             self.orchestrator
-                .send_vlan_setup_requests(h2, dep_veth_ip, vlan_id, &destinations, None)
+                .send_vlan_setup_requests(h2, server_veth, vlan_id, &destinations, None)
                 .await?;
 
-            // create dedicated VLAN on the machine where the parent service is running on
-            // also register the dependent service on the main service machine's hosts file
-            let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+            // create dedicated VLAN on the machine where the "client" service is running on
+            // also register the "server" service on the "client" service machine's hosts file
+            let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
             let host_mapping = HostMapping {
-                ip: dep_veth_ip.to_string(),
+                ip: server_veth.to_string(),
                 name: h2_name.clone(),
             };
             self.orchestrator
-                .send_vlan_setup_requests(h1, veth_ip, vlan_id, &destinations, Some(host_mapping))
+                .send_vlan_setup_requests(
+                    h1,
+                    client_veth,
+                    vlan_id,
+                    &destinations,
+                    Some(host_mapping),
+                )
                 .await?;
 
             // register the link between the two services
             self.services.write().await.entry(h2_name).and_modify(|si| {
                 if let ServiceInfo::Registered(reg) = si {
-                    reg.add_service_client(h1_name);
+                    let ci = ClientInfo::new(client_veth, server_veth, vlan_id);
+                    reg.add_service_client(h1_name, ci);
                 }
             });
         }
@@ -149,26 +157,27 @@ impl NullnetGrpcImpl {
 
         let destinations = vec![service_ip, proxy_ip];
 
-        // create dedicated VLAN on the machine where the service is running on
-        let target_veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
+        // create dedicated VLAN on the machine where the "server" service is running on
+        let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
         self.orchestrator
-            .send_vlan_setup_requests(service_ip, target_veth_ip, vlan_id, &destinations, None)
+            .send_vlan_setup_requests(service_ip, server_veth, vlan_id, &destinations, None)
             .await?;
 
-        // create dedicated VLAN on the machine where the proxy is running on
-        let veth_ip = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+        // create dedicated VLAN on the machine where the "client" proxy is running on
+        let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
         self.orchestrator
-            .send_vlan_setup_requests(proxy_ip, veth_ip, vlan_id, &destinations, None)
+            .send_vlan_setup_requests(proxy_ip, client_veth, vlan_id, &destinations, None)
             .await?;
 
-        // register the client IP to veth IP mapping
+        // register the link between the service and the proxy client
         self.services
             .write()
             .await
             .entry(service_name)
             .and_modify(|si| {
                 if let ServiceInfo::Registered(reg) = si {
-                    reg.add_proxy_client(client_ip, target_veth_ip);
+                    let ci = ClientInfo::new(client_veth, server_veth, vlan_id);
+                    reg.add_proxy_client(client_ip, ci);
                 }
             });
 
@@ -176,7 +185,7 @@ impl NullnetGrpcImpl {
         let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Upstream {
-            ip: target_veth_ip.to_string(),
+            ip: server_veth.to_string(),
             port: u32::from(service_port),
         }))
     }
@@ -230,18 +239,16 @@ impl NullnetGrpcImpl {
             "digraph G {\n\
                 \tbgcolor=grey10;\n\
                 \tnode [color=white, fontcolor=white];\n\
-                \tedge [color=white];\n\n",
+                \tedge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];\n\n",
         );
         for (name, info) in services {
             let style = info.graphviz_style();
             writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!())?;
             if let ServiceInfo::Registered(registered) = info {
-                for pc in &registered.proxy_clients() {
-                    writeln!(graphviz, "\t\"{pc}\" -> \"{name}\";").handle_err(location!())?;
-                }
-
-                for sc in &registered.service_clients() {
-                    writeln!(graphviz, "\t\"{sc}\" -> \"{name}\";").handle_err(location!())?;
+                for (c, ci) in registered.all_clients() {
+                    let edge_label = ci.graphviz_edge_label(true);
+                    writeln!(graphviz, "\t\"{c}\" -> \"{name}\" {edge_label};")
+                        .handle_err(location!())?;
                 }
             }
             graphviz.push('\n');

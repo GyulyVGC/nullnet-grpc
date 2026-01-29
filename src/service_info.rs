@@ -1,4 +1,4 @@
-use crate::clients::Clients;
+use crate::clients::{ClientInfo, Clients};
 use crate::proto::nullnet_grpc::Upstream;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::Deserialize;
@@ -128,24 +128,20 @@ impl RegisteredServiceInfo {
         (self.ip, self.port)
     }
 
-    pub(crate) fn service_clients(&self) -> Vec<String> {
-        self.clients.service_clients()
-    }
-
-    pub(crate) fn add_service_client(&mut self, service: String) {
-        self.clients.add_service_client(service);
+    pub(crate) fn add_service_client(&mut self, service: String, client_info: ClientInfo) {
+        self.clients.add_service_client(service, client_info);
     }
 
     pub(crate) fn is_service_client_setup(&self, service_name: &str) -> bool {
         self.clients.is_service_client_setup(service_name)
     }
 
-    pub(crate) fn proxy_clients(&self) -> Vec<IpAddr> {
-        self.clients.proxy_clients()
+    pub(crate) fn all_clients(&self) -> Vec<(String, ClientInfo)> {
+        self.clients.all_clients()
     }
 
-    pub(crate) fn add_proxy_client(&mut self, client_ip: IpAddr, veth_ip: IpAddr) {
-        self.clients.add_proxy_client(client_ip, veth_ip);
+    pub(crate) fn add_proxy_client(&mut self, client_ip: IpAddr, client_info: ClientInfo) {
+        self.clients.add_proxy_client(client_ip, client_info);
     }
 
     pub(crate) fn is_proxy_client_setup(&self, client_ip: IpAddr) -> Option<Upstream> {
