@@ -33,7 +33,8 @@ impl NullnetGrpcImpl {
 
         let ret = NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services_toml.services_map())),
-            last_registered_vlan: Arc::new(Mutex::new(0)),
+            // start from next id = 2 since 0 is reserved and 1 is the default VLAN
+            last_registered_vlan: Arc::new(Mutex::new(1)),
             orchestrator: Orchestrator::new(),
         };
 
