@@ -138,29 +138,21 @@ impl RegisteredServiceInfo {
         (self.ip, self.port)
     }
 
-    pub(crate) fn add_service_client(&mut self, service: String, client_info: ClientInfo) {
-        self.clients.add_service_client(service, client_info);
+    pub(crate) fn add_client(&mut self, service: String, client_info: ClientInfo) {
+        self.clients.add_client(service, client_info);
     }
 
-    pub(crate) fn is_service_client_setup(&self, service_name: &str) -> bool {
-        self.clients.is_service_client_setup(service_name)
-    }
-
-    pub(crate) fn all_clients(&self) -> Vec<(String, ClientInfo)> {
-        self.clients.all_clients()
-    }
-
-    pub(crate) fn add_proxy_client(&mut self, client_ip: IpAddr, client_info: ClientInfo) {
-        self.clients.add_proxy_client(client_ip, client_info);
-    }
-
-    pub(crate) fn is_proxy_client_setup(&self, client_ip: IpAddr) -> Option<Upstream> {
+    pub(crate) fn is_client_setup(&self, service_name: &str) -> Option<Upstream> {
         self.clients
-            .is_proxy_client_setup(client_ip)
+            .is_client_setup(service_name)
             .map(|veth_ip| Upstream {
                 ip: veth_ip.to_string(),
                 port: u32::from(self.port),
             })
+    }
+
+    pub(crate) fn clients(&self) -> &HashMap<String, ClientInfo> {
+        self.clients.clients()
     }
 }
 

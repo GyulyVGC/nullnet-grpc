@@ -2,12 +2,16 @@
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VlanSetup {
     #[prost(string, tag = "1")]
-    pub target_ip: ::prost::alloc::string::String,
+    pub client_eth: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
-    pub veth_ip: ::prost::alloc::string::String,
-    #[prost(uint32, tag = "3")]
+    pub client_veth: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub server_eth: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub server_veth: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "5")]
     pub vlan_id: u32,
-    #[prost(message, optional, tag = "4")]
+    #[prost(message, optional, tag = "6")]
     pub host_mapping: ::core::option::Option<HostMapping>,
 }
 #[derive(serde::Deserialize)]

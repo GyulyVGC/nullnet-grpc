@@ -4,7 +4,7 @@ use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{Empty, HostMapping, ProxyRequest, Services, Upstream, VlanSetup};
 use crate::service_info::{ServiceInfo, ServicesToml};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -96,105 +96,29 @@ impl NullnetGrpcImpl {
             Err("Service is not registered").handle_err(location!())?
         };
 
-        if let Some(upstream) = registered.is_proxy_client_setup(client_ip) {
+        if let Some(upstream) = registered.is_client_setup(&client_ip.to_string()) {
             println!("'{client_ip}' ---> '{service_name}' is already set up");
             return Ok(Response::new(upstream));
         }
 
-        // setup dependent services' VLANs
-        for ((h1, h1_name), (h2, h2_name)) in registered
-            .dependency_chain(service_name.clone(), &self.services)
-            .await?
-        {
-            let init_time = std::time::Instant::now();
-
-            // check if the link is already set up
-            let h2_service = self.services.read().await.get(&h2_name).cloned();
-            if let Some(ServiceInfo::Registered(reg)) = h2_service
-                && reg.is_service_client_setup(&h1_name)
-            {
-                continue;
-            }
-
-            let vlan_id = self.next_vlan_id().await;
-            let [a, b] = vlan_id.to_be_bytes();
-
-            let destinations = vec![h2, h1];
-
-            // create dedicated VLAN on the machine where the "server" service is running on
-            let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
-            self.orchestrator
-                .send_vlan_setup_requests(h2, server_veth, vlan_id, &destinations, None)
-                .await?;
-
-            // create dedicated VLAN on the machine where the "client" service is running on
-            // also register the "server" service on the "client" service machine's hosts file
-            let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
-            let host_mapping = HostMapping {
-                ip: server_veth.to_string(),
-                name: h2_name.clone(),
-            };
-            self.orchestrator
-                .send_vlan_setup_requests(
-                    h1,
-                    client_veth,
-                    vlan_id,
-                    &destinations,
-                    Some(host_mapping),
-                )
-                .await?;
-
-            let time_ms = init_time.elapsed().as_millis();
-
-            // register the link between the two services
-            self.services.write().await.entry(h2_name).and_modify(|si| {
-                if let ServiceInfo::Registered(reg) = si {
-                    let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
-                    reg.add_service_client(h1_name, ci);
-                }
-            });
-        }
-
-        let init_time = std::time::Instant::now();
-
         let (service_ip, service_port) = registered.ip_port();
 
-        let vlan_id = self.next_vlan_id().await;
-        let [a, b] = vlan_id.to_be_bytes();
-
-        let destinations = vec![service_ip, proxy_ip];
-
-        // create dedicated VLAN on the machine where the "server" service is running on
-        let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
-        self.orchestrator
-            .send_vlan_setup_requests(service_ip, server_veth, vlan_id, &destinations, None)
+        // setup dependent services' VLANs
+        let mut dep_chain = registered
+            .dependency_chain(service_name.clone(), &self.services)
             .await?;
-
-        // create dedicated VLAN on the machine where the "client" proxy is running on
-        let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
-        self.orchestrator
-            .send_vlan_setup_requests(proxy_ip, client_veth, vlan_id, &destinations, None)
-            .await?;
-
-        let time_ms = init_time.elapsed().as_millis();
-
-        // register the link between the service and the proxy client
-        self.services
-            .write()
-            .await
-            .entry(service_name)
-            .and_modify(|si| {
-                if let ServiceInfo::Registered(reg) = si {
-                    let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
-                    reg.add_proxy_client(client_ip, ci);
-                }
-            });
+        dep_chain.push((
+            (proxy_ip, client_ip.to_string()),
+            (service_ip, service_name.clone()),
+        ));
+        // create dedicated VLAN across all the client/server pair of the dependency chain
+        let upstream_ip = self.vlan_chain_setup(dep_chain).await?;
 
         // regenerate the service graphviz for debugging
         let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Upstream {
-            ip: server_veth.to_string(),
+            ip: upstream_ip.to_string(),
             port: u32::from(service_port),
         }))
     }
@@ -271,6 +195,83 @@ impl NullnetGrpcImpl {
         Ok(Response::new(Empty {}))
     }
 
+    pub(crate) async fn vlan_chain_setup(
+        &self,
+        dep_chain: Vec<((IpAddr, String), (IpAddr, String))>,
+    ) -> Result<IpAddr, Error> {
+        let mut upstream_ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+        for ((client_eth, client_name), (server_eth, server_name)) in dep_chain {
+            let init_time = std::time::Instant::now();
+
+            // check if the link is already set up
+            let server_service = self.services.read().await.get(&server_name).cloned();
+            if let Some(ServiceInfo::Registered(reg)) = server_service
+                && reg.is_client_setup(&client_name).is_some()
+            {
+                continue;
+            }
+
+            let vlan_id = self.next_vlan_id().await;
+
+            let destinations = [client_eth, server_eth];
+            // remove duplicates from destinations (in case services are hosted on the same machine)
+            let destinations: HashSet<IpAddr> = destinations.iter().copied().collect();
+
+            let [a, b] = vlan_id.to_be_bytes();
+            let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
+            let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+            upstream_ip = server_veth;
+
+            let host_mapping = Some(HostMapping {
+                ip: server_veth.to_string(),
+                name: server_name.clone(),
+            });
+
+            let msg = VlanSetup {
+                client_eth: client_eth.to_string(),
+                server_eth: server_eth.to_string(),
+                client_veth: client_veth.to_string(),
+                server_veth: server_veth.to_string(),
+                vlan_id: u32::from(vlan_id),
+                host_mapping,
+            };
+
+            let clients = self.orchestrator.clients.read().await;
+            for dest in &destinations {
+                let Some(mutex) = clients.get(dest) else {
+                    continue;
+                };
+                let (inbound, outbound) = &mut *mutex.lock().await;
+
+                outbound
+                    .send(Ok(msg.clone()))
+                    .await
+                    .handle_err(location!())?;
+
+                let _ = inbound.message().await;
+
+                println!("{dest} acknowledged");
+            }
+            drop(clients);
+
+            // register the link between the two services
+            self.services
+                .write()
+                .await
+                .entry(server_name)
+                .and_modify(|si| {
+                    if let ServiceInfo::Registered(reg) = si {
+                        let time_ms = init_time.elapsed().as_millis();
+                        let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
+                        reg.add_client(client_name, ci);
+                    }
+                });
+        }
+
+        Ok(upstream_ip)
+    }
+
     async fn next_vlan_id(&self) -> u16 {
         let mut last_id = self.last_registered_vlan.lock().await;
         *last_id += 1;
@@ -289,7 +290,7 @@ impl NullnetGrpcImpl {
             let style = info.graphviz_style();
             writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!())?;
             if let ServiceInfo::Registered(registered) = info {
-                for (c, ci) in registered.all_clients() {
+                for (c, ci) in registered.clients() {
                     let edge_label = ci.graphviz_edge_label(false);
                     writeln!(graphviz, "\t\"{c}\" -> \"{name}\" {edge_label};")
                         .handle_err(location!())?;

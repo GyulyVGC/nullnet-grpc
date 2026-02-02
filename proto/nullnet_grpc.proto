@@ -20,10 +20,12 @@ service NullnetGrpc {
 // TAP-based clients ---------------------------------------------------------------------------------------------------
 
 message VlanSetup {
-  string target_ip = 1;
-  string veth_ip = 2;
-  uint32 vlan_id = 3;
-  optional HostMapping host_mapping = 4;
+  string client_eth = 1;
+  string client_veth = 2;
+  string server_eth = 3;
+  string server_veth = 4;
+  uint32 vlan_id = 5;
+  optional HostMapping host_mapping = 6;
 }
 
 message Services {
