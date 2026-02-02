@@ -282,7 +282,7 @@ impl NullnetGrpcImpl {
             writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!())?;
             if let ServiceInfo::Registered(registered) = info {
                 for (c, ci) in registered.all_clients() {
-                    let edge_label = ci.graphviz_edge_label(true);
+                    let edge_label = ci.graphviz_edge_label(false);
                     writeln!(graphviz, "\t\"{c}\" -> \"{name}\" {edge_label};")
                         .handle_err(location!())?;
                 }

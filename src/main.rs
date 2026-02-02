@@ -52,7 +52,5 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
 }
 
 // TODO: support live reloading of services.toml on gRPC server
-// TODO: support live reloading of services.toml on TUN side
 // TODO: unregister services and dependencies of machines whose control channel was closed
-// TODO
 // TODO: reuse VLAN IDs of unregistered services
