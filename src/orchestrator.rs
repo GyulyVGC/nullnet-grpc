@@ -11,7 +11,7 @@ pub(crate) type InboundStream = Streaming<Empty>;
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
     // Use RwLock for concurrent reads to parallelize VLAN setup requests
-    pub(crate) clients: Arc<RwLock<HashMap<IpAddr, Mutex<(InboundStream, OutboundStream)>>>>,
+    pub(crate) clients: Arc<RwLock<HashMap<IpAddr, Arc<Mutex<(InboundStream, OutboundStream)>>>>>,
 }
 
 impl Orchestrator {
@@ -30,6 +30,6 @@ impl Orchestrator {
         self.clients
             .write()
             .await
-            .insert(client_ip, Mutex::new((inbound, outbound)));
+            .insert(client_ip, Arc::new(Mutex::new((inbound, outbound))));
     }
 }

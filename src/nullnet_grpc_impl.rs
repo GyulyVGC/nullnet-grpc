@@ -9,6 +9,7 @@ use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -237,23 +238,24 @@ impl NullnetGrpcImpl {
                 host_mapping,
             };
 
-            let clients = self.orchestrator.clients.read().await;
-            for dest in &destinations {
-                let Some(mutex) = clients.get(dest) else {
+            let mut join_set = JoinSet::new();
+            for dest in destinations {
+                let Some(mutex) = self.orchestrator.clients.read().await.get(&dest).cloned() else {
                     continue;
                 };
-                let (inbound, outbound) = &mut *mutex.lock().await;
+                let msg = msg.clone();
+                join_set.spawn(async move {
+                    let (inbound, outbound) = &mut *mutex.lock().await;
 
-                outbound
-                    .send(Ok(msg.clone()))
-                    .await
-                    .handle_err(location!())?;
+                    let _ = outbound.send(Ok(msg)).await.handle_err(location!());
 
-                let _ = inbound.message().await;
+                    let _ = inbound.message().await.handle_err(location!());
 
-                println!("{dest} acknowledged");
+                    println!("{dest} acknowledged");
+                });
             }
-            drop(clients);
+
+            while join_set.join_next().await.is_some() {}
 
             // register the link between the two services
             self.services
