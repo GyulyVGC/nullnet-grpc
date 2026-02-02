@@ -106,6 +106,8 @@ impl NullnetGrpcImpl {
             .dependency_chain(service_name.clone(), &self.services)
             .await?
         {
+            let init_time = std::time::Instant::now();
+
             // check if the link is already set up
             let h2_service = self.services.read().await.get(&h2_name).cloned();
             if let Some(ServiceInfo::Registered(reg)) = h2_service
@@ -142,14 +144,18 @@ impl NullnetGrpcImpl {
                 )
                 .await?;
 
+            let time_ms = init_time.elapsed().as_millis();
+
             // register the link between the two services
             self.services.write().await.entry(h2_name).and_modify(|si| {
                 if let ServiceInfo::Registered(reg) = si {
-                    let ci = ClientInfo::new(client_veth, server_veth, vlan_id);
+                    let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
                     reg.add_service_client(h1_name, ci);
                 }
             });
         }
+
+        let init_time = std::time::Instant::now();
 
         let (service_ip, service_port) = registered.ip_port();
 
@@ -170,6 +176,8 @@ impl NullnetGrpcImpl {
             .send_vlan_setup_requests(proxy_ip, client_veth, vlan_id, &destinations, None)
             .await?;
 
+        let time_ms = init_time.elapsed().as_millis();
+
         // register the link between the service and the proxy client
         self.services
             .write()
@@ -177,7 +185,7 @@ impl NullnetGrpcImpl {
             .entry(service_name)
             .and_modify(|si| {
                 if let ServiceInfo::Registered(reg) = si {
-                    let ci = ClientInfo::new(client_veth, server_veth, vlan_id);
+                    let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
                     reg.add_proxy_client(client_ip, ci);
                 }
             });
