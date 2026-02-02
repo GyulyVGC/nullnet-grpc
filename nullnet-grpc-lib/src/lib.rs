@@ -29,11 +29,19 @@ impl NullnetGrpcInterface {
                 .map_err(|e| e.to_string())?;
         }
 
-        let channel = endpoint.connect().await.map_err(|e| e.to_string())?;
+        loop {
+            if let Ok(channel) = endpoint.connect().await {
+                return Ok(Self {
+                    client: NullnetGrpcClient::new(channel),
+                });
+            }
 
-        Ok(Self {
-            client: NullnetGrpcClient::new(channel),
-        })
+            // retry connection after a delay
+            println!(
+                "Could not connect to gRPC server at {host}:{port}; retrying in 10 seconds..."
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
     }
 
     #[allow(clippy::missing_errors_doc)]
