@@ -2,11 +2,11 @@
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VlanSetup {
     #[prost(string, tag = "1")]
-    pub client_eth: ::prost::alloc::string::String,
+    pub client_ethernet: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub client_veth: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
-    pub server_eth: ::prost::alloc::string::String,
+    pub server_ethernet: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub server_veth: ::prost::alloc::string::String,
     #[prost(uint32, tag = "5")]

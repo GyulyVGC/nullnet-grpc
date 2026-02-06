@@ -202,7 +202,7 @@ impl NullnetGrpcImpl {
     ) -> Result<IpAddr, Error> {
         let mut upstream_ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
-        for ((client_eth, client_name), (server_eth, server_name)) in dep_chain {
+        for ((client_ethernet, client_name), (server_ethernet, server_name)) in dep_chain {
             let init_time = std::time::Instant::now();
 
             // check if the link is already set up
@@ -215,7 +215,7 @@ impl NullnetGrpcImpl {
 
             let vlan_id = self.next_vlan_id().await;
 
-            let destinations = [client_eth, server_eth];
+            let destinations = [client_ethernet, server_ethernet];
             // remove duplicates from destinations (in case services are hosted on the same machine)
             let destinations: HashSet<IpAddr> = destinations.iter().copied().collect();
 
@@ -230,8 +230,8 @@ impl NullnetGrpcImpl {
             });
 
             let msg = VlanSetup {
-                client_eth: client_eth.to_string(),
-                server_eth: server_eth.to_string(),
+                client_ethernet: client_ethernet.to_string(),
+                server_ethernet: server_ethernet.to_string(),
                 client_veth: client_veth.to_string(),
                 server_veth: server_veth.to_string(),
                 vlan_id: u32::from(vlan_id),
