@@ -1,7 +1,9 @@
 use crate::clients::{Client, ClientInfo};
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
-use crate::proto::nullnet_grpc::{Empty, HostMapping, ProxyRequest, Services, Upstream, VlanSetup};
+use crate::proto::nullnet_grpc::{
+    Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VlanSetup,
+};
 use crate::service_info::{ServiceInfo, ServicesToml};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -47,18 +49,11 @@ impl NullnetGrpcImpl {
 
     async fn control_channel_impl(
         &self,
-        request: Request<Streaming<Empty>>,
+        request: Request<Streaming<MsgId>>,
     ) -> Result<Response<<NullnetGrpcImpl as NullnetGrpc>::ControlChannelStream>, Error> {
-        let (sender, receiver) = mpsc::channel(64);
+        let (outbound, receiver) = mpsc::channel(64);
 
-        let sender_ip = request
-            .remote_addr()
-            .ok_or("Could not get remote address for control channel request")
-            .handle_err(location!())?
-            .ip();
-        self.orchestrator
-            .add_client(sender_ip, request.into_inner(), sender)
-            .await;
+        self.orchestrator.add_client(request, outbound).await?;
 
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
@@ -233,6 +228,7 @@ impl NullnetGrpcImpl {
             });
 
             let msg = VlanSetup {
+                msg_id: None,
                 client_ethernet: client_ethernet.to_string(),
                 server_ethernet: server_ethernet.to_string(),
                 client_veth: client_veth.to_string(),
@@ -243,17 +239,11 @@ impl NullnetGrpcImpl {
 
             let mut join_set = JoinSet::new();
             for dest in destinations {
-                let Some(mutex) = self.orchestrator.clients.read().await.get(&dest).cloned() else {
-                    continue;
-                };
                 let msg = msg.clone();
+                let orchestrator = self.orchestrator.clone();
                 join_set.spawn(async move {
-                    let (inbound, outbound) = &mut *mutex.lock().await;
-
-                    let _ = outbound.send(Ok(msg)).await.handle_err(location!());
-
-                    let _ = inbound.message().await.handle_err(location!());
-
+                    // TODO: handle errors?
+                    let _ = orchestrator.send_vlan_setup(dest, msg).await;
                     println!("{dest} acknowledged");
                 });
             }
@@ -320,7 +310,7 @@ impl NullnetGrpc for NullnetGrpcImpl {
 
     async fn control_channel(
         &self,
-        request: Request<Streaming<Empty>>,
+        request: Request<Streaming<MsgId>>,
     ) -> Result<Response<Self::ControlChannelStream>, Status> {
         println!(
             "Nullnet control channel requested from '{}'",

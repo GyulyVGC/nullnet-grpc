@@ -6,7 +6,7 @@ service NullnetGrpc {
   // TAP-based clients APIs --------------------------------------------------------------------------------------------
 
   // Control channel
-  rpc ControlChannel(stream Empty) returns (stream VlanSetup);
+  rpc ControlChannel(stream MsgId) returns (stream VlanSetup);
 
   // Services list
   rpc ServicesList(Services) returns (Empty);
@@ -20,12 +20,17 @@ service NullnetGrpc {
 // TAP-based clients ---------------------------------------------------------------------------------------------------
 
 message VlanSetup {
-  string client_ethernet = 1;
-  string client_veth = 2;
-  string server_ethernet = 3;
-  string server_veth = 4;
-  uint32 vlan_id = 5;
-  optional HostMapping host_mapping = 6;
+  MsgId msg_id = 1;
+  string client_ethernet = 2;
+  string client_veth = 3;
+  string server_ethernet = 4;
+  string server_veth = 5;
+  uint32 vlan_id = 6;
+  optional HostMapping host_mapping = 7;
+}
+
+message MsgId {
+  string id = 1;
 }
 
 message Services {
