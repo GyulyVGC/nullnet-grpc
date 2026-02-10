@@ -1,4 +1,4 @@
-use crate::clients::ClientInfo;
+use crate::clients::{Client, ClientInfo};
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{Empty, HostMapping, ProxyRequest, Services, Upstream, VlanSetup};
@@ -97,7 +97,8 @@ impl NullnetGrpcImpl {
             Err("Service is not registered").handle_err(location!())?
         };
 
-        if let Some(upstream) = registered.is_client_setup(&client_ip.to_string()) {
+        let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
+        if let Some(upstream) = registered.is_client_setup(&proxy_client) {
             println!("'{client_ip}' ---> '{service_name}' is already set up");
             return Ok(Response::new(upstream));
         }
@@ -109,8 +110,8 @@ impl NullnetGrpcImpl {
             .dependency_chain(service_name.clone(), &self.services)
             .await?;
         dep_chain.push((
-            (proxy_ip, client_ip.to_string()),
-            (service_ip, service_name.clone()),
+            (proxy_ip, proxy_client),
+            (service_ip, Client::new(service_name, None)),
         ));
         // create dedicated VLAN across all the client/server pair of the dependency chain
         let upstream_ip = self.vlan_chain_setup(dep_chain).await?;
@@ -198,17 +199,17 @@ impl NullnetGrpcImpl {
 
     pub(crate) async fn vlan_chain_setup(
         &self,
-        dep_chain: Vec<((IpAddr, String), (IpAddr, String))>,
+        dep_chain: Vec<((IpAddr, Client), (IpAddr, Client))>,
     ) -> Result<IpAddr, Error> {
         let mut upstream_ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
-        for ((client_ethernet, client_name), (server_ethernet, server_name)) in dep_chain {
+        for ((client_ethernet, client), (server_ethernet, server)) in dep_chain {
             let init_time = std::time::Instant::now();
 
             // check if the link is already set up
-            let server_service = self.services.read().await.get(&server_name).cloned();
+            let server_service = self.services.read().await.get(&server.name()).cloned();
             if let Some(ServiceInfo::Registered(reg)) = server_service
-                && reg.is_client_setup(&client_name).is_some()
+                && reg.is_client_setup(&client).is_some()
             {
                 continue;
             }
@@ -222,11 +223,13 @@ impl NullnetGrpcImpl {
             let [a, b] = vlan_id.to_be_bytes();
             let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
             let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
-            upstream_ip = server_veth;
+            if client.is_proxy() {
+                upstream_ip = server_veth;
+            }
 
             let host_mapping = Some(HostMapping {
                 ip: server_veth.to_string(),
-                name: server_name.clone(),
+                name: server.name(),
             });
 
             let msg = VlanSetup {
@@ -261,12 +264,12 @@ impl NullnetGrpcImpl {
             self.services
                 .write()
                 .await
-                .entry(server_name)
+                .entry(server.name())
                 .and_modify(|si| {
                     if let ServiceInfo::Registered(reg) = si {
                         let time_ms = init_time.elapsed().as_millis();
                         let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
-                        reg.add_client(client_name, ci);
+                        reg.add_client(client, ci);
                     }
                 });
         }
@@ -293,8 +296,9 @@ impl NullnetGrpcImpl {
             writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!())?;
             if let ServiceInfo::Registered(registered) = info {
                 for (c, ci) in registered.clients() {
+                    let c_name = c.name();
                     let edge_label = ci.graphviz_edge_label(false);
-                    writeln!(graphviz, "\t\"{c}\" -> \"{name}\" {edge_label};")
+                    writeln!(graphviz, "\t\"{c_name}\" -> \"{name}\" {edge_label};")
                         .handle_err(location!())?;
                 }
             }

@@ -4,20 +4,44 @@ use std::net::IpAddr;
 #[derive(Clone, Default)]
 pub(crate) struct Clients {
     /// Mapping from service client to client info.
-    clients: HashMap<String, ClientInfo>,
+    clients: HashMap<Client, ClientInfo>,
 }
 
 impl Clients {
-    pub(crate) fn add_client(&mut self, client: String, client_info: ClientInfo) {
+    pub(crate) fn add_client(&mut self, client: Client, client_info: ClientInfo) {
         self.clients.insert(client, client_info);
     }
 
-    pub(crate) fn is_client_setup(&self, client: &str) -> Option<IpAddr> {
+    pub(crate) fn is_client_setup(&self, client: &Client) -> Option<IpAddr> {
         self.clients.get(client).map(|ci| ci.server_veth)
     }
 
-    pub(crate) fn clients(&self) -> &HashMap<String, ClientInfo> {
+    pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
         &self.clients
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub(crate) struct Client {
+    name: String,
+    proxy: Option<IpAddr>,
+}
+
+impl Client {
+    pub(crate) fn new(name: String, proxy: Option<IpAddr>) -> Self {
+        Self { name, proxy }
+    }
+
+    pub(crate) fn name(&self) -> String {
+        if let Some(proxy) = self.proxy {
+            format!("{}\n(via proxy {})", self.name, proxy)
+        } else {
+            self.name.clone()
+        }
+    }
+
+    pub(crate) fn is_proxy(&self) -> bool {
+        self.proxy.is_some()
     }
 }
 
