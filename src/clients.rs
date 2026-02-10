@@ -34,7 +34,7 @@ impl Client {
 
     pub(crate) fn name(&self) -> String {
         if let Some(proxy) = self.proxy {
-            format!("{}\n(via proxy {})", self.name, proxy)
+            format!("{} (via {})", self.name, proxy)
         } else {
             self.name.clone()
         }
