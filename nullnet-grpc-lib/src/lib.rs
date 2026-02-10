@@ -1,7 +1,7 @@
 mod proto;
 
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
-use crate::nullnet_grpc::{Empty, ProxyRequest, Services, Upstream, VlanSetup};
+use crate::nullnet_grpc::{MsgId, ProxyRequest, Services, Upstream, VlanSetup};
 pub use proto::*;
 use tokio::sync::mpsc;
 use tonic::Request;
@@ -47,7 +47,7 @@ impl NullnetGrpcInterface {
     #[allow(clippy::missing_errors_doc)]
     pub async fn control_channel(
         &self,
-        receiver: mpsc::Receiver<Empty>,
+        receiver: mpsc::Receiver<MsgId>,
     ) -> Result<Streaming<VlanSetup>, String> {
         let receiver = ReceiverStream::new(receiver);
 
