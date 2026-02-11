@@ -58,6 +58,7 @@ impl NullnetGrpcImpl {
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
 
+    // TODO: avoid race conditions when multiple proxy requests are made concurrently
     async fn proxy_impl(
         &self,
         request: Request<ProxyRequest>,
@@ -112,6 +113,7 @@ impl NullnetGrpcImpl {
         let upstream_ip = self.vlan_chain_setup(dep_chain).await?;
 
         // regenerate the service graphviz for debugging
+        // TODO: remove this from here!
         let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Upstream {

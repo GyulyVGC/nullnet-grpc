@@ -55,4 +55,3 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
 // TODO: unregister services of machines whose control channel was closed
 // TODO: clean up veth interfaces of unregistered services
 // TODO: reuse VLAN IDs of unregistered services
-// TODO: create VLANs of a chain in parallel
