@@ -3,35 +3,45 @@ use std::net::IpAddr;
 
 #[derive(Clone, Default)]
 pub(crate) struct Clients {
-    /// Mapping from browser IP to client info.
-    proxy_clients: HashMap<IpAddr, ClientInfo>,
-    /// Mapping from service name to client info.
-    service_clients: HashMap<String, ClientInfo>,
+    /// Mapping from service client to client info.
+    clients: HashMap<Client, ClientInfo>,
 }
 
 impl Clients {
-    pub(crate) fn add_service_client(&mut self, service: String, client_info: ClientInfo) {
-        self.service_clients.insert(service, client_info);
+    pub(crate) fn add_client(&mut self, client: Client, client_info: ClientInfo) {
+        self.clients.insert(client, client_info);
     }
 
-    pub(crate) fn is_service_client_setup(&self, service: &str) -> bool {
-        self.service_clients.contains_key(service)
+    pub(crate) fn is_client_setup(&self, client: &Client) -> Option<IpAddr> {
+        self.clients.get(client).map(|ci| ci.server_veth)
     }
 
-    pub(crate) fn add_proxy_client(&mut self, client_ip: IpAddr, client_info: ClientInfo) {
-        self.proxy_clients.insert(client_ip, client_info);
+    pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
+        &self.clients
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub(crate) struct Client {
+    name: String,
+    proxy: Option<IpAddr>,
+}
+
+impl Client {
+    pub(crate) fn new(name: String, proxy: Option<IpAddr>) -> Self {
+        Self { name, proxy }
     }
 
-    pub(crate) fn is_proxy_client_setup(&self, client_ip: IpAddr) -> Option<IpAddr> {
-        self.proxy_clients.get(&client_ip).map(|ci| ci.server_veth)
+    pub(crate) fn name(&self) -> String {
+        if let Some(proxy) = self.proxy {
+            format!("{} (via {})", self.name, proxy)
+        } else {
+            self.name.clone()
+        }
     }
 
-    pub(crate) fn all_clients(&self) -> Vec<(String, ClientInfo)> {
-        self.service_clients
-            .iter()
-            .map(|(k, v)| (k.clone(), *v))
-            .chain(self.proxy_clients.iter().map(|(k, v)| (k.to_string(), *v)))
-            .collect()
+    pub(crate) fn is_proxy(&self) -> bool {
+        self.proxy.is_some()
     }
 }
 

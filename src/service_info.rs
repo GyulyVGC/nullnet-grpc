@@ -1,4 +1,4 @@
-use crate::clients::{ClientInfo, Clients};
+use crate::clients::{Client, ClientInfo, Clients};
 use crate::proto::nullnet_grpc::Upstream;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::Deserialize;
@@ -110,7 +110,7 @@ impl RegisteredServiceInfo {
         &self,
         service_name: String,
         services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
-    ) -> Result<Vec<((IpAddr, String), (IpAddr, String))>, Error> {
+    ) -> Result<Vec<((IpAddr, Client), (IpAddr, Client))>, Error> {
         let mut chain = Vec::new();
         let mut current_ip = self.ip;
         let mut current_name = service_name;
@@ -126,7 +126,10 @@ impl RegisteredServiceInfo {
                 return Err("Dependency service is not registered yet").handle_err(location!());
             };
             let dep_ip = dep_reg.ip;
-            chain.push(((current_ip, current_name.clone()), (dep_ip, dep.clone())));
+            chain.push((
+                (current_ip, Client::new(current_name.clone(), None)),
+                (dep_ip, Client::new(dep.clone(), None)),
+            ));
             current_ip = dep_ip;
             current_name = dep.clone();
         }
@@ -138,29 +141,21 @@ impl RegisteredServiceInfo {
         (self.ip, self.port)
     }
 
-    pub(crate) fn add_service_client(&mut self, service: String, client_info: ClientInfo) {
-        self.clients.add_service_client(service, client_info);
+    pub(crate) fn add_client(&mut self, client: Client, client_info: ClientInfo) {
+        self.clients.add_client(client, client_info);
     }
 
-    pub(crate) fn is_service_client_setup(&self, service_name: &str) -> bool {
-        self.clients.is_service_client_setup(service_name)
-    }
-
-    pub(crate) fn all_clients(&self) -> Vec<(String, ClientInfo)> {
-        self.clients.all_clients()
-    }
-
-    pub(crate) fn add_proxy_client(&mut self, client_ip: IpAddr, client_info: ClientInfo) {
-        self.clients.add_proxy_client(client_ip, client_info);
-    }
-
-    pub(crate) fn is_proxy_client_setup(&self, client_ip: IpAddr) -> Option<Upstream> {
+    pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
         self.clients
-            .is_proxy_client_setup(client_ip)
+            .is_client_setup(client)
             .map(|veth_ip| Upstream {
                 ip: veth_ip.to_string(),
                 port: u32::from(self.port),
             })
+    }
+
+    pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
+        self.clients.clients()
     }
 }
 

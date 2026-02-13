@@ -55,4 +55,3 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
 // TODO: unregister services of machines whose control channel was closed
 // TODO: clean up veth interfaces of unregistered services
 // TODO: reuse VLAN IDs of unregistered services
-// TODO: each client "browser" should be identified by the tuple (browser_ip, proxy_ip)
