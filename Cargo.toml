@@ -10,7 +10,7 @@ prost = "0.14.3"
 tonic-prost = "0.14.3"
 nullnet-liberror = { git = "https://github.com/NullNet-ai/libguard.git", branch = "nullnet-liberror-print" }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "fs"] }
-ctrlc = { version = "3.5.1", features = ["termination"] }
+ctrlc = { version = "3.5.2", features = ["termination"] }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "0.9.11"
 uuid = { version = "1.20.0", features = ["v4"] }
