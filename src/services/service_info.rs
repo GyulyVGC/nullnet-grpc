@@ -43,17 +43,6 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn graphviz_style(&self) -> &'static str {
-        match self {
-            ServiceInfo::Unregistered(unreg) if unreg.is_proxy_reachable => {
-                "[style=solid, color=red]"
-            }
-            ServiceInfo::Unregistered(_) => "[style=dashed, color=red]",
-            ServiceInfo::Registered(reg) if reg.is_proxy_reachable => "[style=solid, color=green]",
-            ServiceInfo::Registered(_) => "[style=dashed, color=green]",
-        }
-    }
-
     pub(crate) fn is_proxy_reachable(&self) -> bool {
         match self {
             ServiceInfo::Unregistered(unreg) => unreg.is_proxy_reachable,

@@ -68,19 +68,19 @@ impl ClientInfo {
         }
     }
 
-    pub(crate) fn graphviz_edge_label(&self, show_ends: bool) -> String {
-        let Self {
-            client_veth,
-            server_veth,
-            vlan_id,
-            time_ms,
-        } = self;
-        if show_ends {
-            format!(
-                "[label=\"VLAN {vlan_id} [{time_ms}ms]\", taillabel=\"{client_veth}\", headlabel=\"{server_veth}\"]"
-            )
-        } else {
-            format!("[label=\"VLAN {vlan_id} [{time_ms}ms]\"]")
-        }
+    pub(crate) fn client_veth(&self) -> IpAddr {
+        self.client_veth
+    }
+
+    pub(crate) fn server_veth(&self) -> IpAddr {
+        self.server_veth
+    }
+
+    pub(crate) fn vlan_id(&self) -> u16 {
+        self.vlan_id
+    }
+
+    pub(crate) fn time_ms(&self) -> u128 {
+        self.time_ms
     }
 }

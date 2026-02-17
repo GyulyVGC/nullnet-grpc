@@ -1,3 +1,4 @@
+use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
@@ -8,7 +9,6 @@ use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc};
@@ -29,6 +29,12 @@ impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
         let services = Arc::new(RwLock::new(ServicesToml::load().await?));
 
+        // regenerate the service graphviz periodically for debugging
+        let services_2 = services.clone();
+        tokio::spawn(async move {
+            generate_graphviz(services_2).await;
+        });
+
         // keep services up to date with the services.toml file
         let services_2 = services.clone();
         tokio::spawn(async move {
@@ -37,17 +43,12 @@ impl NullnetGrpcImpl {
                 .expect("failed to watch services.toml for changes");
         });
 
-        let ret = NullnetGrpcImpl {
+        Ok(NullnetGrpcImpl {
             services,
             // start from next id = 2 since 0 is reserved and 1 is the default VLAN
             last_registered_vlan: Arc::new(Mutex::new(1)),
             orchestrator: Orchestrator::new(),
-        };
-
-        // regenerate the service graphviz for debugging
-        let _ = ret.generate_graphviz().await;
-
-        Ok(ret)
+        })
     }
 
     async fn control_channel_impl(
@@ -114,10 +115,6 @@ impl NullnetGrpcImpl {
         ));
         // create dedicated VLAN across all the client/server pair of the dependency chain
         let upstream_ip = self.vlan_chain_setup(dep_chain).await?;
-
-        // regenerate the service graphviz for debugging
-        // TODO: remove this from here!
-        let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Upstream {
             ip: upstream_ip.to_string(),
@@ -190,9 +187,6 @@ impl NullnetGrpcImpl {
         }
 
         drop(services_mut);
-
-        // regenerate the service graphviz for debugging
-        let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Empty {}))
     }
@@ -289,36 +283,6 @@ impl NullnetGrpcImpl {
         ret_val
             .ok_or("No valid upstream IP found after VLAN chain setup")
             .handle_err(location!())
-    }
-
-    async fn generate_graphviz(&self) -> Result<(), Error> {
-        let services = self.services.read().await.clone();
-        let mut graphviz = String::from(
-            "digraph G {\n\
-                \tbgcolor=grey10;\n\
-                \tnode [color=white, fontcolor=white];\n\
-                \tedge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];\n\n",
-        );
-        for (name, info) in services {
-            let style = info.graphviz_style();
-            writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!())?;
-            if let ServiceInfo::Registered(registered) = info {
-                for (c, ci) in registered.clients() {
-                    let c_name = c.name();
-                    let edge_label = ci.graphviz_edge_label(false);
-                    writeln!(graphviz, "\t\"{c_name}\" -> \"{name}\" {edge_label};")
-                        .handle_err(location!())?;
-                }
-            }
-            graphviz.push('\n');
-        }
-        graphviz = graphviz.trim().to_string();
-        graphviz.push_str("\n}\n");
-        tokio::fs::write("graph.dot", graphviz)
-            .await
-            .handle_err(location!())?;
-
-        Ok(())
     }
 }
 
