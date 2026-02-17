@@ -27,16 +27,18 @@ pub(crate) struct NullnetGrpcImpl {
 
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
-        // read services from file
-        let services_toml_str = tokio::fs::read_to_string("services.toml")
-            .await
-            .handle_err(location!())?;
-        let services_toml: ServicesToml =
-            toml::from_str(&services_toml_str).handle_err(location!())?;
-        println!("Loaded services: {services_toml:?}");
+        let services = Arc::new(RwLock::new(ServicesToml::load().await?));
+
+        // keep services up to date with the services.toml file
+        let services_2 = services.clone();
+        tokio::spawn(async move {
+            ServicesToml::watch(&services_2)
+                .await
+                .expect("failed to watch services.toml for changes");
+        });
 
         let ret = NullnetGrpcImpl {
-            services: Arc::new(RwLock::new(services_toml.services_map())),
+            services,
             // start from next id = 2 since 0 is reserved and 1 is the default VLAN
             last_registered_vlan: Arc::new(Mutex::new(1)),
             orchestrator: Orchestrator::new(),

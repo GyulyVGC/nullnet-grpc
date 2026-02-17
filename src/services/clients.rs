@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub(crate) struct Clients {
     /// Mapping from service client to client info.
     clients: HashMap<Client, ClientInfo>,
@@ -21,7 +21,7 @@ impl Clients {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) struct Client {
     name: String,
     proxy: Option<IpAddr>,
@@ -45,7 +45,7 @@ impl Client {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ClientInfo {
     client_veth: IpAddr,
     server_veth: IpAddr,

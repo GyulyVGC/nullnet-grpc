@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum ServiceInfo {
     Unregistered(UnregisteredServiceInfo),
     Registered(RegisteredServiceInfo),
@@ -76,7 +76,7 @@ impl ServiceInfo {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct UnregisteredServiceInfo {
     dependencies: Vec<String>,
     is_proxy_reachable: bool,
@@ -91,7 +91,7 @@ impl UnregisteredServiceInfo {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct RegisteredServiceInfo {
     /// Dependencies of the service.
     dependencies: Vec<String>,
