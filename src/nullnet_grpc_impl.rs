@@ -1,10 +1,11 @@
-use crate::clients::{Client, ClientInfo};
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
     Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VlanSetup,
 };
-use crate::service_info::{ServiceInfo, ServicesToml};
+use crate::services::clients::{Client, ClientInfo};
+use crate::services::input::ServicesToml;
+use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
