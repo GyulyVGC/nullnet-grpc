@@ -56,7 +56,19 @@ impl ServicesToml {
                     // ensure file changes are propagated
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     if let Ok(loaded_services) = ServicesToml::load().await {
-                        *services.write().await = loaded_services;
+                        let mut services_guard = services.write().await;
+                        // remove services that are no longer present in the config
+                        services_guard.retain(|name, _| loaded_services.contains_key(name));
+                        // update existing services (dependencies and reachability) and add new services
+                        for (loaded_name, loaded_info) in loaded_services {
+                            services_guard
+                                .entry(loaded_name)
+                                .and_modify(|existing_info| {
+                                    existing_info.update_from_file(&loaded_info);
+                                })
+                                .or_insert(loaded_info);
+                        }
+                        drop(services_guard);
                     }
                     last_update_time = Instant::now();
                 }

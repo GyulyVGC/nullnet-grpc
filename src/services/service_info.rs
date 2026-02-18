@@ -50,6 +50,19 @@ impl ServiceInfo {
         }
     }
 
+    pub(crate) fn update_from_file(&mut self, loaded: &Self) {
+        match self {
+            ServiceInfo::Unregistered(unreg) => {
+                unreg.dependencies = loaded.dependencies();
+                unreg.is_proxy_reachable = loaded.is_proxy_reachable();
+            }
+            ServiceInfo::Registered(reg) => {
+                reg.dependencies = loaded.dependencies();
+                reg.is_proxy_reachable = loaded.is_proxy_reachable();
+            }
+        }
+    }
+
     fn dependencies(&self) -> Vec<String> {
         match self {
             ServiceInfo::Unregistered(unreg) => unreg.dependencies.clone(),
