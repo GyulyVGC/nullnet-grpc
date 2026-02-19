@@ -171,6 +171,7 @@ impl NullnetGrpcImpl {
                 if let ServiceInfo::Registered(reg) = si {
                     let (ip, _) = reg.ip_port();
                     if ip == sender_ip {
+                        // TODO: cleanup VLANs (unregistered service)
                         si.unregister();
                     }
                 }

@@ -51,14 +51,24 @@ impl ServiceInfo {
     }
 
     pub(crate) fn update_from_file(&mut self, loaded: &Self) {
+        let loaded_dependencies = loaded.dependencies();
+        let loaded_is_proxy_reachable = loaded.is_proxy_reachable();
         match self {
             ServiceInfo::Unregistered(unreg) => {
-                unreg.dependencies = loaded.dependencies();
-                unreg.is_proxy_reachable = loaded.is_proxy_reachable();
+                unreg.dependencies = loaded_dependencies;
+                unreg.is_proxy_reachable = loaded_is_proxy_reachable;
             }
             ServiceInfo::Registered(reg) => {
-                reg.dependencies = loaded.dependencies();
-                reg.is_proxy_reachable = loaded.is_proxy_reachable();
+                // dependencies
+                reg.dependencies = loaded_dependencies;
+
+                // proxy reachability
+                // if the service becomes proxy-unreachable, remove all proxy clients
+                if reg.is_proxy_reachable && !loaded_is_proxy_reachable {
+                    // TODO: cleanup VLANs (only proxy clients)
+                    reg.clients.clients_mut().retain(|c, _| !c.is_proxy());
+                }
+                reg.is_proxy_reachable = loaded_is_proxy_reachable;
             }
         }
     }

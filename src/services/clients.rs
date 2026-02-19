@@ -19,6 +19,10 @@ impl Clients {
     pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
         &self.clients
     }
+
+    pub(crate) fn clients_mut(&mut self) -> &mut HashMap<Client, ClientInfo> {
+        &mut self.clients
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]

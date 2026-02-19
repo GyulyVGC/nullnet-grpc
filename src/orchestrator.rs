@@ -44,7 +44,11 @@ impl Orchestrator {
                     let _ = tx.send(());
                 }
             }
+
             println!("Control channel from '{client_ip}' closed");
+            // remove client from orchestrator state
+            orchestrator.clients.write().await.remove(&client_ip);
+            // TODO: cleanup VLANs (closed control channel)
         });
 
         Ok(())
