@@ -1,5 +1,5 @@
 use crate::services::service_info::ServiceInfo;
-use crate::vlan::{cleanup_vlans_failed_service, cleanup_vlans_chain};
+use crate::vlan::{cleanup_vlans_chain, cleanup_vlans_invalidated_service};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::Deserialize;
@@ -64,21 +64,22 @@ impl ServicesToml {
                         for name in services.keys() {
                             if !loaded_services.contains_key(name) {
                                 let _ =
-                                    cleanup_vlans_failed_service(name.clone(), services_mut).await;
+                                    cleanup_vlans_invalidated_service(name.clone(), true, services_mut).await;
                                 services_mut.remove(name);
                             }
                         }
 
                         // add new services and update existing services (dependencies and reachability)
                         for (loaded_name, loaded_info) in loaded_services {
-                            if !loaded_info.is_proxy_reachable()
-                                && let Some(s) = services.get(&loaded_name)
-                                && s.is_proxy_reachable()
+                            if let Some(old_info) = services.get(&loaded_name)
                             {
-                                let _ = cleanup_vlans_chain(
-                                    loaded_name.clone(),
-                                    services_mut,
-                                );
+                                if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable() {
+                                    let _ = cleanup_vlans_chain(&loaded_name, services_mut);
+                                }
+
+                                if loaded_info.dependencies() != old_info.dependencies() {
+                                    let _ = cleanup_vlans_invalidated_service(loaded_name.clone(), false, services_mut).await;
+                                }
                             }
 
                             services_mut

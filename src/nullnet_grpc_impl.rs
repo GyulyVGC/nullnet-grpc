@@ -7,7 +7,7 @@ use crate::proto::nullnet_grpc::{
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
-use crate::vlan::cleanup_vlans_failed_service;
+use crate::vlan::cleanup_vlans_invalidated_service;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
@@ -168,7 +168,7 @@ impl NullnetGrpcImpl {
 
         // unregister services that are no longer present
         for service_name in to_be_unregistered {
-            cleanup_vlans_failed_service(service_name.clone(), &mut services_mut).await?;
+            cleanup_vlans_invalidated_service(service_name.clone(), true, &mut services_mut).await?;
         }
 
         // re-register services that are still present

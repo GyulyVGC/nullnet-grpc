@@ -1,6 +1,6 @@
 use crate::proto::nullnet_grpc::{MsgId, VlanSetup};
 use crate::services::service_info::ServiceInfo;
-use crate::vlan::cleanup_vlans_failed_service;
+use crate::vlan::cleanup_vlans_invalidated_service;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -70,7 +70,7 @@ impl Orchestrator {
 
             // cleanup VLANs for all closed services
             for closed_service in closed_services {
-                let _ = cleanup_vlans_failed_service(closed_service, &mut *services.write().await)
+                let _ = cleanup_vlans_invalidated_service(closed_service, true, &mut *services.write().await)
                     .await;
             }
         });

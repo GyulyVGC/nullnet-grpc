@@ -63,7 +63,7 @@ impl ServiceInfo {
         }
     }
 
-    fn dependencies(&self) -> Vec<String> {
+    pub(crate) fn dependencies(&self) -> Vec<String> {
         match self {
             ServiceInfo::Unregistered(unreg) => unreg.dependencies.clone(),
             ServiceInfo::Registered(reg) => reg.dependencies.clone(),
