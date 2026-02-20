@@ -3,8 +3,6 @@ use crate::services::clients::{Client, ClientInfo, Clients};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 #[derive(Clone, Debug)]
 pub(crate) enum ServiceInfo {
@@ -59,15 +57,7 @@ impl ServiceInfo {
                 unreg.is_proxy_reachable = loaded_is_proxy_reachable;
             }
             ServiceInfo::Registered(reg) => {
-                // dependencies
                 reg.dependencies = loaded_dependencies;
-
-                // proxy reachability
-                // if the service becomes proxy-unreachable, remove all proxy clients
-                if reg.is_proxy_reachable && !loaded_is_proxy_reachable {
-                    // TODO: cleanup VLANs (only proxy clients)
-                    reg.clients.clients_mut().retain(|c, _| !c.is_proxy());
-                }
                 reg.is_proxy_reachable = loaded_is_proxy_reachable;
             }
         }
@@ -117,18 +107,16 @@ pub(crate) struct RegisteredServiceInfo {
 }
 
 impl RegisteredServiceInfo {
-    pub(crate) async fn dependency_chain(
+    pub(crate) fn dependency_chain(
         &self,
         service_name: String,
-        services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
+        services: &HashMap<String, ServiceInfo>,
     ) -> Result<Vec<((IpAddr, Client), (IpAddr, Client))>, Error> {
         let mut chain = Vec::new();
         let mut current_ip = self.ip;
         let mut current_name = service_name;
         for dep in &self.dependencies {
             let ServiceInfo::Registered(dep_reg) = services
-                .read()
-                .await
                 .get(dep)
                 .cloned()
                 .ok_or("Dependency service not found")
@@ -142,10 +130,30 @@ impl RegisteredServiceInfo {
                 (dep_ip, Client::new(dep.clone(), None)),
             ));
             current_ip = dep_ip;
-            current_name = dep.clone();
+            current_name.clone_from(dep);
         }
 
         Ok(chain)
+    }
+
+    pub(crate) fn add_chain(&mut self, client: &Client) {
+        if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
+            client_info.add_active_chain();
+        }
+    }
+
+    pub(crate) fn remove_chains(&mut self, client: &Client, num_chains: usize) {
+        if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
+            client_info.remove_active_chains(num_chains);
+        }
+    }
+
+    pub(crate) fn chains(&self, client: &Client) -> usize {
+        self.clients
+            .clients()
+            .get(client)
+            .map(ClientInfo::active_chains)
+            .unwrap_or_default()
     }
 
     pub(crate) fn ip_port(&self) -> (IpAddr, u16) {
@@ -167,5 +175,13 @@ impl RegisteredServiceInfo {
 
     pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
         self.clients.clients()
+    }
+
+    pub(crate) fn clients_mut(&mut self) -> &mut HashMap<Client, ClientInfo> {
+        self.clients.clients_mut()
+    }
+
+    pub(crate) fn dependencies(&self) -> &Vec<String> {
+        &self.dependencies
     }
 }

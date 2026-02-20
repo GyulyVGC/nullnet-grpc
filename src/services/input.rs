@@ -1,4 +1,5 @@
 use crate::services::service_info::ServiceInfo;
+use crate::vlan::{cleanup_vlans_failed_service, cleanup_vlans_chain};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::Deserialize;
@@ -56,19 +57,37 @@ impl ServicesToml {
                     // ensure file changes are propagated
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     if let Ok(loaded_services) = ServicesToml::load().await {
-                        let mut services_guard = services.write().await;
+                        let services_mut = &mut *services.write().await;
+                        let services = services_mut.clone();
+
                         // remove services that are no longer present in the config
-                        services_guard.retain(|name, _| loaded_services.contains_key(name));
-                        // update existing services (dependencies and reachability) and add new services
+                        for name in services.keys() {
+                            if !loaded_services.contains_key(name) {
+                                let _ =
+                                    cleanup_vlans_failed_service(name.clone(), services_mut).await;
+                                services_mut.remove(name);
+                            }
+                        }
+
+                        // add new services and update existing services (dependencies and reachability)
                         for (loaded_name, loaded_info) in loaded_services {
-                            services_guard
+                            if !loaded_info.is_proxy_reachable()
+                                && let Some(s) = services.get(&loaded_name)
+                                && s.is_proxy_reachable()
+                            {
+                                let _ = cleanup_vlans_chain(
+                                    loaded_name.clone(),
+                                    services_mut,
+                                );
+                            }
+
+                            services_mut
                                 .entry(loaded_name)
                                 .and_modify(|existing_info| {
                                     existing_info.update_from_file(&loaded_info);
                                 })
                                 .or_insert(loaded_info);
                         }
-                        drop(services_guard);
                     }
                     last_update_time = Instant::now();
                 }

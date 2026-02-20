@@ -55,6 +55,7 @@ pub(crate) struct ClientInfo {
     server_veth: IpAddr,
     vlan_id: u16,
     time_ms: u128,
+    active_chains: usize,
 }
 
 impl ClientInfo {
@@ -69,6 +70,7 @@ impl ClientInfo {
             server_veth,
             vlan_id,
             time_ms,
+            active_chains: 0,
         }
     }
 
@@ -86,5 +88,17 @@ impl ClientInfo {
 
     pub(crate) fn time_ms(&self) -> u128 {
         self.time_ms
+    }
+
+    pub(crate) fn add_active_chain(&mut self) {
+        self.active_chains += 1;
+    }
+
+    pub(crate) fn remove_active_chains(&mut self, num_chains: usize) {
+        self.active_chains = self.active_chains.saturating_sub(num_chains);
+    }
+
+    pub(crate) fn active_chains(&self) -> usize {
+        self.active_chains
     }
 }

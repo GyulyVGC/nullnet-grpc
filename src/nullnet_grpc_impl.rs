@@ -7,6 +7,7 @@ use crate::proto::nullnet_grpc::{
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
+use crate::vlan::cleanup_vlans_failed_service;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
@@ -57,7 +58,9 @@ impl NullnetGrpcImpl {
     ) -> Result<Response<<NullnetGrpcImpl as NullnetGrpc>::ControlChannelStream>, Error> {
         let (outbound, receiver) = mpsc::channel(64);
 
-        self.orchestrator.add_client(request, outbound).await?;
+        self.orchestrator
+            .add_client(request, outbound, self.services.clone())
+            .await?;
 
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
@@ -106,9 +109,8 @@ impl NullnetGrpcImpl {
         let (service_ip, service_port) = registered.ip_port();
 
         // setup dependent services' VLANs
-        let mut dep_chain = registered
-            .dependency_chain(service_name.clone(), &self.services)
-            .await?;
+        let mut dep_chain =
+            registered.dependency_chain(service_name.clone(), &*self.services.read().await)?;
         dep_chain.push((
             (proxy_ip, proxy_client),
             (service_ip, Client::new(service_name, None)),
@@ -166,16 +168,7 @@ impl NullnetGrpcImpl {
 
         // unregister services that are no longer present
         for service_name in to_be_unregistered {
-            services_mut.entry(service_name).and_modify(|si| {
-                // re-check that it's still registered from this sender_ip to avoid race conditions
-                if let ServiceInfo::Registered(reg) = si {
-                    let (ip, _) = reg.ip_port();
-                    if ip == sender_ip {
-                        // TODO: cleanup VLANs (unregistered service)
-                        si.unregister();
-                    }
-                }
-            });
+            cleanup_vlans_failed_service(service_name.clone(), &mut services_mut).await?;
         }
 
         // re-register services that are still present
@@ -204,13 +197,17 @@ impl NullnetGrpcImpl {
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
-                // check if the link is already set up
-                let server_service = services.read().await.get(&server.name()).cloned();
-                if let Some(ServiceInfo::Registered(reg)) = server_service
-                    && reg.is_client_setup(&client).is_some()
-                {
+                // add chain and check if the link is already set up
+                let mut services_guard = services.write().await;
+                let Some(ServiceInfo::Registered(reg)) = services_guard.get_mut(&server.name())
+                else {
+                    return None;
+                };
+                if reg.is_client_setup(&client).is_some() {
+                    reg.add_chain(&client);
                     return None;
                 }
+                drop(services_guard);
 
                 let mut last_id = last_registered_vlan.lock().await;
                 *last_id += 1;
@@ -266,7 +263,8 @@ impl NullnetGrpcImpl {
                         if let ServiceInfo::Registered(reg) = si {
                             let time_ms = init_time.elapsed().as_millis();
                             let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
-                            reg.add_client(client, ci);
+                            reg.add_client(client.clone(), ci);
+                            reg.add_chain(&client);
                         }
                     });
 
