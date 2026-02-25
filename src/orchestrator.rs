@@ -1,4 +1,4 @@
-use crate::proto::nullnet_grpc::{MsgId, VlanSetup};
+use crate::proto::nullnet_grpc::{MsgId, VxlanMessage};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
 
-type OutboundStream = mpsc::Sender<Result<VlanSetup, Status>>;
+type OutboundStream = mpsc::Sender<Result<VxlanMessage, Status>>;
 
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
@@ -50,19 +50,19 @@ impl Orchestrator {
         Ok(())
     }
 
-    pub(crate) async fn send_vlan_setup(
+    pub(crate) async fn send_vxlan_setup(
         &self,
         client_ip: IpAddr,
-        mut vlan_setup: VlanSetup,
+        mut vxlan_setup: VxlanMessage,
     ) -> Result<(), Error> {
         let clients = self.clients.read().await;
         if let Some(outbound) = clients.get(&client_ip) {
             let (tx, rx) = oneshot::channel();
             let id = Uuid::new_v4().to_string();
             self.pending.lock().await.insert(id.clone(), tx);
-            vlan_setup.msg_id = Some(MsgId { id });
+            vxlan_setup.msg_id = Some(MsgId { id });
             outbound
-                .send(Ok(vlan_setup))
+                .send(Ok(vxlan_setup))
                 .await
                 .handle_err(location!())?;
             rx.await.handle_err(location!())

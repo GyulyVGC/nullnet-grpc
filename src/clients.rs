@@ -49,7 +49,7 @@ impl Client {
 pub(crate) struct ClientInfo {
     client_veth: IpAddr,
     server_veth: IpAddr,
-    vlan_id: u16,
+    vxlan_id: u16,
     time_ms: u128,
 }
 
@@ -57,13 +57,13 @@ impl ClientInfo {
     pub(crate) fn new(
         client_veth: IpAddr,
         server_veth: IpAddr,
-        vlan_id: u16,
+        vxlan_id: u32,
         time_ms: u128,
     ) -> Self {
         Self {
             client_veth,
             server_veth,
-            vlan_id,
+            vxlan_id,
             time_ms,
         }
     }
@@ -72,15 +72,15 @@ impl ClientInfo {
         let Self {
             client_veth,
             server_veth,
-            vlan_id,
+            vxlan_id,
             time_ms,
         } = self;
         if show_ends {
             format!(
-                "[label=\"VLAN {vlan_id} [{time_ms}ms]\", taillabel=\"{client_veth}\", headlabel=\"{server_veth}\"]"
+                "[label=\"VXLAN {vxlan_id} [{time_ms}ms]\", taillabel=\"{client_veth}\", headlabel=\"{server_veth}\"]"
             )
         } else {
-            format!("[label=\"VLAN {vlan_id} [{time_ms}ms]\"]")
+            format!("[label=\"VXLAN {vxlan_id} [{time_ms}ms]\"]")
         }
     }
 }

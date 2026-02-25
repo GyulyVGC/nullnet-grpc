@@ -2,7 +2,8 @@ use crate::clients::{Client, ClientInfo};
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
-    Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VlanSetup,
+    Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VxlanMessage, VxlanSetup,
+    vxlan_message,
 };
 use crate::service_info::{ServiceInfo, ServicesToml};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -18,9 +19,9 @@ use tonic::{Request, Response, Status, Streaming};
 pub(crate) struct NullnetGrpcImpl {
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
-    /// Last registered VLAN ID
-    last_registered_vlan: Arc<Mutex<u16>>,
-    /// Orchestrator to manage TAP-based clients and VLAN setups
+    /// Last registered VXLAN ID
+    last_registered_vxlan: Arc<Mutex<u32>>,
+    /// Orchestrator to manage TAP-based clients and VXLAN setups
     orchestrator: Orchestrator,
 }
 
@@ -36,8 +37,7 @@ impl NullnetGrpcImpl {
 
         let ret = NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services_toml.services_map())),
-            // start from next id = 2 since 0 is reserved and 1 is the default VLAN
-            last_registered_vlan: Arc::new(Mutex::new(1)),
+            last_registered_vxlan: Arc::new(Mutex::new(99)),
             orchestrator: Orchestrator::new(),
         };
 
@@ -101,7 +101,7 @@ impl NullnetGrpcImpl {
 
         let (service_ip, service_port) = registered.ip_port();
 
-        // setup dependent services' VLANs
+        // setup dependent services' VXLANs
         let mut dep_chain = registered
             .dependency_chain(service_name.clone(), &self.services)
             .await?;
@@ -109,8 +109,8 @@ impl NullnetGrpcImpl {
             (proxy_ip, proxy_client),
             (service_ip, Client::new(service_name, None)),
         ));
-        // create dedicated VLAN across all the client/server pair of the dependency chain
-        let upstream_ip = self.vlan_chain_setup(dep_chain).await?;
+        // create dedicated VXLANs across all the client/server pair of the dependency chain
+        let upstream_ip = self.vxlan_chain_setup(dep_chain).await?;
 
         // regenerate the service graphviz for debugging
         // TODO: remove this from here!
@@ -194,7 +194,7 @@ impl NullnetGrpcImpl {
         Ok(Response::new(Empty {}))
     }
 
-    pub(crate) async fn vlan_chain_setup(
+    pub(crate) async fn vxlan_chain_setup(
         &self,
         dep_chain: Vec<((IpAddr, Client), (IpAddr, Client))>,
     ) -> Result<IpAddr, Error> {
@@ -202,7 +202,7 @@ impl NullnetGrpcImpl {
         for ((client_ethernet, client), (server_ethernet, server)) in dep_chain {
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
-            let last_registered_vlan = self.last_registered_vlan.clone();
+            let last_registered_vxlan = self.last_registered_vxlan.clone();
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
@@ -214,26 +214,30 @@ impl NullnetGrpcImpl {
                     return None;
                 }
 
-                let mut last_id = last_registered_vlan.lock().await;
+                let mut last_id = last_registered_vxlan.lock().await;
                 *last_id += 1;
-                let vlan_id = *last_id;
+                let vxlan_id = *last_id;
                 drop(last_id);
 
-                let [a, b] = vlan_id.to_be_bytes();
+                let [a, b] = vxlan_id.to_be_bytes();
                 let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
                 let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
                 let host_mapping = Some(HostMapping {
                     ip: server_veth.to_string(),
                     name: server.name(),
                 });
-                let msg = VlanSetup {
-                    msg_id: None,
-                    client_ethernet: client_ethernet.to_string(),
-                    server_ethernet: server_ethernet.to_string(),
-                    client_veth: client_veth.to_string(),
-                    server_veth: server_veth.to_string(),
-                    vlan_id: u32::from(vlan_id),
-                    host_mapping,
+                let msg = VxlanMessage {
+                    message: Some(vxlan_message::Message::VxlanSetup(VxlanSetup {
+                        msg_id: None,
+                        vxlan_id,
+                        ns_name: format!("ns_{vxlan_id}"),
+                        ns_net: "".to_string(),
+                        br_name: format!("br_{vxlan_id}"),
+                        br_net: "".to_string(),
+                        local_ip: "".to_string(),
+                        remote_ip: "".to_string(),
+                        host_mapping,
+                    })),
                 };
 
                 let upstream_ip = if client.is_proxy() {
@@ -252,7 +256,7 @@ impl NullnetGrpcImpl {
                     let orchestrator = orchestrator.clone();
                     join_set_inner.spawn(async move {
                         // TODO: handle errors?
-                        let _ = orchestrator.send_vlan_setup(dest, msg).await;
+                        let _ = orchestrator.send_vxlan_setup(dest, msg).await;
                         println!("{dest} acknowledged");
                     });
                 }
@@ -267,7 +271,7 @@ impl NullnetGrpcImpl {
                     .and_modify(|si| {
                         if let ServiceInfo::Registered(reg) = si {
                             let time_ms = init_time.elapsed().as_millis();
-                            let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
+                            let ci = ClientInfo::new(client_veth, server_veth, vxlan_id, time_ms);
                             reg.add_client(client, ci);
                         }
                     });
@@ -284,7 +288,7 @@ impl NullnetGrpcImpl {
         }
 
         ret_val
-            .ok_or("No valid upstream IP found after VLAN chain setup")
+            .ok_or("No valid upstream IP found after VXLAN chain setup")
             .handle_err(location!())
     }
 
@@ -321,7 +325,7 @@ impl NullnetGrpcImpl {
 
 #[tonic::async_trait]
 impl NullnetGrpc for NullnetGrpcImpl {
-    type ControlChannelStream = ReceiverStream<Result<VlanSetup, Status>>;
+    type ControlChannelStream = ReceiverStream<Result<VxlanMessage, Status>>;
 
     async fn control_channel(
         &self,
