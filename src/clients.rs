@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Clone, Default)]
 pub(crate) struct Clients {
@@ -12,8 +12,8 @@ impl Clients {
         self.clients.insert(client, client_info);
     }
 
-    pub(crate) fn is_client_setup(&self, client: &Client) -> Option<IpAddr> {
-        self.clients.get(client).map(|ci| ci.server_veth)
+    pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Ipv4Addr> {
+        self.clients.get(client).map(|ci| ci.server_br)
     }
 
     pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
@@ -47,22 +47,22 @@ impl Client {
 
 #[derive(Clone, Copy)]
 pub(crate) struct ClientInfo {
-    client_veth: IpAddr,
-    server_veth: IpAddr,
-    vxlan_id: u16,
+    client_br: Ipv4Addr,
+    server_br: Ipv4Addr,
+    vxlan_id: u32,
     time_ms: u128,
 }
 
 impl ClientInfo {
     pub(crate) fn new(
-        client_veth: IpAddr,
-        server_veth: IpAddr,
+        client_br: Ipv4Addr,
+        server_br: Ipv4Addr,
         vxlan_id: u32,
         time_ms: u128,
     ) -> Self {
         Self {
-            client_veth,
-            server_veth,
+            client_br,
+            server_br,
             vxlan_id,
             time_ms,
         }
@@ -70,8 +70,8 @@ impl ClientInfo {
 
     pub(crate) fn graphviz_edge_label(&self, show_ends: bool) -> String {
         let Self {
-            client_veth,
-            server_veth,
+            client_br: client_veth,
+            server_br: server_veth,
             vxlan_id,
             time_ms,
         } = self;

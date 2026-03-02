@@ -1,4 +1,5 @@
-use crate::proto::nullnet_grpc::{MsgId, VxlanMessage};
+use crate::proto::nullnet_grpc::{HostMapping, MsgId, VxlanMessage, VxlanSetup, vxlan_message};
+use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -52,22 +53,40 @@ impl Orchestrator {
 
     pub(crate) async fn send_vxlan_setup(
         &self,
-        client_ip: IpAddr,
-        mut vxlan_setup: VxlanMessage,
+        dest: IpAddr,
+        vxlan_id: u32,
+        ns_net: Ipv4Network,
+        br_net: Ipv4Network,
+        remote: IpAddr,
+        host_mapping: Option<HostMapping>,
     ) -> Result<(), Error> {
         let clients = self.clients.read().await;
-        if let Some(outbound) = clients.get(&client_ip) {
+        if let Some(outbound) = clients.get(&dest) {
             let (tx, rx) = oneshot::channel();
             let id = Uuid::new_v4().to_string();
             self.pending.lock().await.insert(id.clone(), tx);
-            vxlan_setup.msg_id = Some(MsgId { id });
+
+            let message = vxlan_message::Message::VxlanSetup(VxlanSetup {
+                msg_id: Some(MsgId { id }),
+                vxlan_id,
+                ns_name: format!("ns_{vxlan_id}"),
+                ns_net: ns_net.to_string(),
+                br_name: format!("br_{vxlan_id}"),
+                br_net: br_net.to_string(),
+                local_ip: dest.to_string(),
+                remote_ip: remote.to_string(),
+                host_mapping,
+            });
+
             outbound
-                .send(Ok(vxlan_setup))
+                .send(Ok(VxlanMessage {
+                    message: Some(message),
+                }))
                 .await
                 .handle_err(location!())?;
             rx.await.handle_err(location!())
         } else {
-            Err(format!("Client with IP {client_ip} not found")).handle_err(location!())
+            Err(format!("Client with IP {dest} not found")).handle_err(location!())
         }
     }
 }

@@ -2,12 +2,12 @@ use crate::clients::{Client, ClientInfo};
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
-    Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VxlanMessage, VxlanSetup,
-    vxlan_message,
+    Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VxlanMessage,
 };
 use crate::service_info::{ServiceInfo, ServicesToml};
+use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -37,7 +37,7 @@ impl NullnetGrpcImpl {
 
         let ret = NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services_toml.services_map())),
-            last_registered_vxlan: Arc::new(Mutex::new(99)),
+            last_registered_vxlan: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
         };
 
@@ -197,7 +197,7 @@ impl NullnetGrpcImpl {
     pub(crate) async fn vxlan_chain_setup(
         &self,
         dep_chain: Vec<((IpAddr, Client), (IpAddr, Client))>,
-    ) -> Result<IpAddr, Error> {
+    ) -> Result<Ipv4Addr, Error> {
         let mut join_set_outer = JoinSet::new();
         for ((client_ethernet, client), (server_ethernet, server)) in dep_chain {
             let services = self.services.clone();
@@ -219,47 +219,67 @@ impl NullnetGrpcImpl {
                 let vxlan_id = *last_id;
                 drop(last_id);
 
-                let [a, b] = vxlan_id.to_be_bytes();
-                let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
-                let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
+                let [_, _, a, b] = vxlan_id.to_be_bytes();
+                let ns_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 1), 24)
+                    .handle_err(location!())
+                    .ok()?;
+                let br_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 2), 24)
+                    .handle_err(location!())
+                    .ok()?;
+                let ns_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, 3), 24)
+                    .handle_err(location!())
+                    .ok()?;
+                let br_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, 4), 24)
+                    .handle_err(location!())
+                    .ok()?;
+
+                let br_ip_server = br_net_server.ip();
+                let br_ip_client = br_net_client.ip();
+
                 let host_mapping = Some(HostMapping {
-                    ip: server_veth.to_string(),
+                    ip: br_ip_server.to_string(),
                     name: server.name(),
                 });
-                let msg = VxlanMessage {
-                    message: Some(vxlan_message::Message::VxlanSetup(VxlanSetup {
-                        msg_id: None,
-                        vxlan_id,
-                        ns_name: format!("ns_{vxlan_id}"),
-                        ns_net: "".to_string(),
-                        br_name: format!("br_{vxlan_id}"),
-                        br_net: "".to_string(),
-                        local_ip: "".to_string(),
-                        remote_ip: "".to_string(),
-                        host_mapping,
-                    })),
-                };
 
                 let upstream_ip = if client.is_proxy() {
-                    Some(server_veth)
+                    Some(br_ip_server)
                 } else {
                     None
                 };
 
-                let destinations = [client_ethernet, server_ethernet];
-                // remove duplicates from destinations (in case services are hosted on the same machine)
-                let destinations: HashSet<IpAddr> = destinations.iter().copied().collect();
-
                 let mut join_set_inner = JoinSet::new();
-                for dest in destinations {
-                    let msg = msg.clone();
-                    let orchestrator = orchestrator.clone();
-                    join_set_inner.spawn(async move {
-                        // TODO: handle errors?
-                        let _ = orchestrator.send_vxlan_setup(dest, msg).await;
-                        println!("{dest} acknowledged");
-                    });
-                }
+
+                let orch = orchestrator.clone();
+                join_set_inner.spawn(async move {
+                    // TODO: handle errors?
+                    let _ = orch
+                        .send_vxlan_setup(
+                            server_ethernet,
+                            vxlan_id,
+                            ns_net_server,
+                            br_net_server,
+                            client_ethernet,
+                            None,
+                        )
+                        .await;
+                    println!("{server_ethernet} acknowledged");
+                });
+
+                let orch = orchestrator.clone();
+                join_set_inner.spawn(async move {
+                    // TODO: handle errors?
+                    let _ = orch
+                        .send_vxlan_setup(
+                            client_ethernet,
+                            vxlan_id,
+                            ns_net_client,
+                            br_net_client,
+                            server_ethernet,
+                            host_mapping,
+                        )
+                        .await;
+                    println!("{client_ethernet} acknowledged");
+                });
 
                 while join_set_inner.join_next().await.is_some() {}
 
@@ -271,7 +291,7 @@ impl NullnetGrpcImpl {
                     .and_modify(|si| {
                         if let ServiceInfo::Registered(reg) = si {
                             let time_ms = init_time.elapsed().as_millis();
-                            let ci = ClientInfo::new(client_veth, server_veth, vxlan_id, time_ms);
+                            let ci = ClientInfo::new(br_ip_client, br_ip_server, vxlan_id, time_ms);
                             reg.add_client(client, ci);
                         }
                     });
