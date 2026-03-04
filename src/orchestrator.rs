@@ -1,7 +1,9 @@
-use crate::proto::nullnet_grpc::{HostMapping, MsgId, VxlanMessage, vxlan_message, VxlanSetup};
-use ipnetwork::Ipv4Network;
+use crate::proto::nullnet_grpc::{
+    HostMapping, MsgId, VxlanMessage, VxlanSetup, VxlanTeardown, vxlan_message,
+};
 use crate::services::service_info::ServiceInfo;
 use crate::vxlan::cleanup_vxlans_invalidated_service;
+use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -71,8 +73,13 @@ impl Orchestrator {
 
             // cleanup VXLANs for all closed services
             for closed_service in closed_services {
-                let _ = cleanup_vxlans_invalidated_service(closed_service, true, &mut *services.write().await)
-                    .await;
+                let _ = cleanup_vxlans_invalidated_service(
+                    closed_service,
+                    true,
+                    &mut *services.write().await,
+                    &orchestrator,
+                )
+                .await;
             }
         });
 
@@ -113,6 +120,30 @@ impl Orchestrator {
                 .await
                 .handle_err(location!())?;
             rx.await.handle_err(location!())
+        } else {
+            Err(format!("Client with IP {dest} not found")).handle_err(location!())
+        }
+    }
+
+    pub(crate) async fn send_vxlan_teardown(
+        &self,
+        dest: IpAddr,
+        vxlan_id: u32,
+    ) -> Result<(), Error> {
+        let clients = self.clients.read().await;
+        if let Some(outbound) = clients.get(&dest) {
+            let message = vxlan_message::Message::VxlanTeardown(VxlanTeardown {
+                ns_name: format!("ns_{vxlan_id}"),
+                br_name: format!("br_{vxlan_id}"),
+            });
+
+            outbound
+                .send(Ok(VxlanMessage {
+                    message: Some(message),
+                }))
+                .await
+                .handle_err(location!())?;
+            Ok(())
         } else {
             Err(format!("Client with IP {dest} not found")).handle_err(location!())
         }

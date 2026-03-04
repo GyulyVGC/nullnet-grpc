@@ -1,3 +1,4 @@
+use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::Upstream;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -142,18 +143,32 @@ impl RegisteredServiceInfo {
         }
     }
 
-    pub(crate) fn remove_chains(&mut self, client: &Client, num_chains: usize) {
-        if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
+    pub(crate) async fn remove_chains(
+        &mut self,
+        client_ip: IpAddr,
+        client: &Client,
+        num_chains: usize,
+        orchestrator: &Orchestrator,
+    ) {
+        let vxlan_to_remove = if let Some(client_info) = self.clients.clients_mut().get_mut(client)
+        {
             client_info.remove_active_chains(num_chains);
-        }
-    }
+            if client_info.active_chains() == 0 {
+                Some(client_info.vxlan_id())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-    pub(crate) fn chains(&self, client: &Client) -> usize {
-        self.clients
-            .clients()
-            .get(client)
-            .map(ClientInfo::active_chains)
-            .unwrap_or_default()
+        if let Some(vxlan_id) = vxlan_to_remove {
+            self.clients_mut().remove(client);
+
+            for dest in [self.ip, client_ip] {
+                let _ = orchestrator.send_vxlan_teardown(dest, vxlan_id).await;
+            }
+        }
     }
 
     pub(crate) fn ip_port(&self) -> (IpAddr, u16) {
@@ -165,12 +180,10 @@ impl RegisteredServiceInfo {
     }
 
     pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
-        self.clients
-            .is_client_setup(client)
-            .map(|br_ip| Upstream {
-                ip: br_ip.to_string(),
-                port: u32::from(self.port),
-            })
+        self.clients.is_client_setup(client).map(|br_ip| Upstream {
+            ip: br_ip.to_string(),
+            port: u32::from(self.port),
+        })
     }
 
     pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {

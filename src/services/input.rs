@@ -1,3 +1,4 @@
+use crate::orchestrator::Orchestrator;
 use crate::services::service_info::ServiceInfo;
 use crate::vxlan::{cleanup_vxlans_chain, cleanup_vxlans_invalidated_service};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -33,6 +34,7 @@ impl ServicesToml {
 
     pub(crate) async fn watch(
         services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
+        orchestrator: Orchestrator,
     ) -> Result<(), Error> {
         let mut services_directory = PathBuf::from(SERVICES_PATH);
         services_directory.pop();
@@ -63,22 +65,38 @@ impl ServicesToml {
                         // remove services that are no longer present in the config
                         for name in services.keys() {
                             if !loaded_services.contains_key(name) {
-                                let _ =
-                                    cleanup_vxlans_invalidated_service(name.clone(), true, services_mut).await;
+                                let _ = cleanup_vxlans_invalidated_service(
+                                    name.clone(),
+                                    true,
+                                    services_mut,
+                                    &orchestrator,
+                                )
+                                .await;
                                 services_mut.remove(name);
                             }
                         }
 
                         // add new services and update existing services (dependencies and reachability)
                         for (loaded_name, loaded_info) in loaded_services {
-                            if let Some(old_info) = services.get(&loaded_name)
-                            {
-                                if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable() {
-                                    let _ = cleanup_vxlans_chain(&loaded_name, services_mut);
+                            if let Some(old_info) = services.get(&loaded_name) {
+                                if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable()
+                                {
+                                    let _ = cleanup_vxlans_chain(
+                                        &loaded_name,
+                                        services_mut,
+                                        &orchestrator,
+                                    )
+                                    .await;
                                 }
 
                                 if loaded_info.dependencies() != old_info.dependencies() {
-                                    let _ = cleanup_vxlans_invalidated_service(loaded_name.clone(), false, services_mut).await;
+                                    let _ = cleanup_vxlans_invalidated_service(
+                                        loaded_name.clone(),
+                                        false,
+                                        services_mut,
+                                        &orchestrator,
+                                    )
+                                    .await;
                                 }
                             }
 

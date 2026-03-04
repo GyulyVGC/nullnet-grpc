@@ -37,10 +37,13 @@ impl NullnetGrpcImpl {
             generate_graphviz(services_2).await;
         });
 
+        let orchestrator = Orchestrator::new();
+        let orchestrator_2 = orchestrator.clone();
+
         // keep services up to date with the services.toml file
         let services_2 = services.clone();
         tokio::spawn(async move {
-            ServicesToml::watch(&services_2)
+            ServicesToml::watch(&services_2, orchestrator_2.clone())
                 .await
                 .expect("failed to watch services.toml for changes");
         });
@@ -48,7 +51,7 @@ impl NullnetGrpcImpl {
         Ok(NullnetGrpcImpl {
             services,
             last_registered_vxlan: Arc::new(Mutex::new(100)),
-            orchestrator: Orchestrator::new(),
+            orchestrator,
         })
     }
 
@@ -168,7 +171,13 @@ impl NullnetGrpcImpl {
 
         // unregister services that are no longer present
         for service_name in to_be_unregistered {
-            cleanup_vxlans_invalidated_service(service_name.clone(), true, &mut services_mut).await?;
+            cleanup_vxlans_invalidated_service(
+                service_name.clone(),
+                true,
+                &mut services_mut,
+                &self.orchestrator,
+            )
+            .await?;
         }
 
         // re-register services that are still present

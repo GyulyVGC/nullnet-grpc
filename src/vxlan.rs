@@ -1,3 +1,4 @@
+use crate::orchestrator::Orchestrator;
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::Error;
 use std::collections::HashMap;
@@ -7,6 +8,7 @@ pub(crate) async fn cleanup_vxlans_invalidated_service(
     invalidated_service: String,
     is_failed: bool,
     services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
 ) -> Result<(), Error> {
     let mut services_to_cleanup = Vec::new();
     for (service_name, si) in services.clone() {
@@ -14,13 +16,15 @@ pub(crate) async fn cleanup_vxlans_invalidated_service(
             continue;
         };
 
-        if invalidated_service.eq(&service_name) || reg.dependencies().contains(&invalidated_service) {
+        if invalidated_service.eq(&service_name)
+            || reg.dependencies().contains(&invalidated_service)
+        {
             services_to_cleanup.push(service_name);
         }
     }
 
     for name in services_to_cleanup {
-        cleanup_vxlans_chain(&name, services)?;
+        let _ = cleanup_vxlans_chain(&name, services, orchestrator).await;
     }
 
     // unregister failed service
@@ -31,9 +35,10 @@ pub(crate) async fn cleanup_vxlans_invalidated_service(
     Ok(())
 }
 
-pub(crate) fn cleanup_vxlans_chain(
+pub(crate) async fn cleanup_vxlans_chain(
     name: &str,
     services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
 ) -> Result<(), Error> {
     let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
         return Ok(());
@@ -43,14 +48,12 @@ pub(crate) fn cleanup_vxlans_chain(
 
     let chain = reg.dependency_chain(name.to_string(), services)?;
 
-    for ((_, client), (_, server)) in chain {
+    for ((client_ip, client), (_, server)) in chain {
         if let Some(s) = services.get_mut(&server.name())
             && let ServiceInfo::Registered(reg) = s
         {
-            reg.remove_chains(&client, num_proxy_clients);
-            if reg.chains(&client) == 0 {
-                reg.clients_mut().remove(&client);
-            }
+            reg.remove_chains(client_ip, &client, num_proxy_clients, orchestrator)
+                .await;
         }
     }
 
