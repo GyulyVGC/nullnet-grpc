@@ -1,7 +1,7 @@
 use crate::proto::nullnet_grpc::{HostMapping, MsgId, VxlanMessage, vxlan_message, VxlanSetup};
 use ipnetwork::Ipv4Network;
 use crate::services::service_info::ServiceInfo;
-use crate::vlan::cleanup_vlans_invalidated_service;
+use crate::vxlan::cleanup_vxlans_invalidated_service;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -69,9 +69,9 @@ impl Orchestrator {
                 .map(|(name, _)| name.clone())
                 .collect();
 
-            // cleanup VLANs for all closed services
+            // cleanup VXLANs for all closed services
             for closed_service in closed_services {
-                let _ = cleanup_vlans_invalidated_service(closed_service, true, &mut *services.write().await)
+                let _ = cleanup_vxlans_invalidated_service(closed_service, true, &mut *services.write().await)
                     .await;
             }
         });

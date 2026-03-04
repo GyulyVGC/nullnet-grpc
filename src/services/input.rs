@@ -1,5 +1,5 @@
 use crate::services::service_info::ServiceInfo;
-use crate::vlan::{cleanup_vlans_chain, cleanup_vlans_invalidated_service};
+use crate::vxlan::{cleanup_vxlans_chain, cleanup_vxlans_invalidated_service};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::Deserialize;
@@ -64,7 +64,7 @@ impl ServicesToml {
                         for name in services.keys() {
                             if !loaded_services.contains_key(name) {
                                 let _ =
-                                    cleanup_vlans_invalidated_service(name.clone(), true, services_mut).await;
+                                    cleanup_vxlans_invalidated_service(name.clone(), true, services_mut).await;
                                 services_mut.remove(name);
                             }
                         }
@@ -74,11 +74,11 @@ impl ServicesToml {
                             if let Some(old_info) = services.get(&loaded_name)
                             {
                                 if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable() {
-                                    let _ = cleanup_vlans_chain(&loaded_name, services_mut);
+                                    let _ = cleanup_vxlans_chain(&loaded_name, services_mut);
                                 }
 
                                 if loaded_info.dependencies() != old_info.dependencies() {
-                                    let _ = cleanup_vlans_invalidated_service(loaded_name.clone(), false, services_mut).await;
+                                    let _ = cleanup_vxlans_invalidated_service(loaded_name.clone(), false, services_mut).await;
                                 }
                             }
 

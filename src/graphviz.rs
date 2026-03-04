@@ -55,16 +55,16 @@ impl ServiceInfo {
 
 impl ClientInfo {
     fn graphviz_edge_label(&self, show_ends: bool) -> String {
-        let client_veth = self.client_br();
-        let server_veth = self.server_br();
-        let vlan_id = self.vxlan_id();
+        let client_br = self.client_br();
+        let server_br = self.server_br();
+        let vxlan_id = self.vxlan_id();
         let time_ms = self.time_ms();
         if show_ends {
             format!(
-                "[label=\"VLAN {vlan_id} [{time_ms}ms]\", taillabel=\"{client_veth}\", headlabel=\"{server_veth}\"]"
+                "[label=\"VXLAN {vxlan_id} [{time_ms}ms]\", taillabel=\"{client_br}\", headlabel=\"{server_br}\"]"
             )
         } else {
-            format!("[label=\"VLAN {vlan_id} [{time_ms}ms]\"]")
+            format!("[label=\"VXLAN {vxlan_id} [{time_ms}ms]\"]")
         }
     }
 }

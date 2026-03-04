@@ -2,8 +2,8 @@ use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::Error;
 use std::collections::HashMap;
 
-// TODO: cleanup VLANs (at the moment we're only removing clients from services map)
-pub(crate) async fn cleanup_vlans_invalidated_service(
+// TODO: cleanup VXLANs (at the moment we're only removing clients from services map)
+pub(crate) async fn cleanup_vxlans_invalidated_service(
     invalidated_service: String,
     is_failed: bool,
     services: &mut HashMap<String, ServiceInfo>,
@@ -20,7 +20,7 @@ pub(crate) async fn cleanup_vlans_invalidated_service(
     }
 
     for name in services_to_cleanup {
-        cleanup_vlans_chain(&name, services)?;
+        cleanup_vxlans_chain(&name, services)?;
     }
 
     // unregister failed service
@@ -31,7 +31,7 @@ pub(crate) async fn cleanup_vlans_invalidated_service(
     Ok(())
 }
 
-pub(crate) fn cleanup_vlans_chain(
+pub(crate) fn cleanup_vxlans_chain(
     name: &str,
     services: &mut HashMap<String, ServiceInfo>,
 ) -> Result<(), Error> {

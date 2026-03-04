@@ -7,7 +7,7 @@ use crate::proto::nullnet_grpc::{
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
-use crate::vlan::cleanup_vlans_invalidated_service;
+use crate::vxlan::cleanup_vxlans_invalidated_service;
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -47,7 +47,6 @@ impl NullnetGrpcImpl {
 
         Ok(NullnetGrpcImpl {
             services,
-            // start from next id = 2 since 0 is reserved and 1 is the default VLAN
             last_registered_vxlan: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
         })
@@ -169,7 +168,7 @@ impl NullnetGrpcImpl {
 
         // unregister services that are no longer present
         for service_name in to_be_unregistered {
-            cleanup_vlans_invalidated_service(service_name.clone(), true, &mut services_mut).await?;
+            cleanup_vxlans_invalidated_service(service_name.clone(), true, &mut services_mut).await?;
         }
 
         // re-register services that are still present
