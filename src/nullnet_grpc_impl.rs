@@ -1,14 +1,16 @@
-use crate::clients::{Client, ClientInfo};
+use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
     Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VxlanMessage,
 };
-use crate::service_info::{ServiceInfo, ServicesToml};
+use crate::services::clients::{Client, ClientInfo};
+use crate::services::input::ServicesToml;
+use crate::services::service_info::ServiceInfo;
+use crate::vlan::cleanup_vlans_invalidated_service;
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc};
@@ -27,24 +29,28 @@ pub(crate) struct NullnetGrpcImpl {
 
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
-        // read services from file
-        let services_toml_str = tokio::fs::read_to_string("services.toml")
-            .await
-            .handle_err(location!())?;
-        let services_toml: ServicesToml =
-            toml::from_str(&services_toml_str).handle_err(location!())?;
-        println!("Loaded services: {services_toml:?}");
+        let services = Arc::new(RwLock::new(ServicesToml::load().await?));
 
-        let ret = NullnetGrpcImpl {
-            services: Arc::new(RwLock::new(services_toml.services_map())),
+        // regenerate the service graphviz periodically for debugging
+        let services_2 = services.clone();
+        tokio::spawn(async move {
+            generate_graphviz(services_2).await;
+        });
+
+        // keep services up to date with the services.toml file
+        let services_2 = services.clone();
+        tokio::spawn(async move {
+            ServicesToml::watch(&services_2)
+                .await
+                .expect("failed to watch services.toml for changes");
+        });
+
+        Ok(NullnetGrpcImpl {
+            services,
+            // start from next id = 2 since 0 is reserved and 1 is the default VLAN
             last_registered_vxlan: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
-        };
-
-        // regenerate the service graphviz for debugging
-        let _ = ret.generate_graphviz().await;
-
-        Ok(ret)
+        })
     }
 
     async fn control_channel_impl(
@@ -53,7 +59,9 @@ impl NullnetGrpcImpl {
     ) -> Result<Response<<NullnetGrpcImpl as NullnetGrpc>::ControlChannelStream>, Error> {
         let (outbound, receiver) = mpsc::channel(64);
 
-        self.orchestrator.add_client(request, outbound).await?;
+        self.orchestrator
+            .add_client(request, outbound, self.services.clone())
+            .await?;
 
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
@@ -102,19 +110,14 @@ impl NullnetGrpcImpl {
         let (service_ip, service_port) = registered.ip_port();
 
         // setup dependent services' VXLANs
-        let mut dep_chain = registered
-            .dependency_chain(service_name.clone(), &self.services)
-            .await?;
+        let mut dep_chain =
+            registered.dependency_chain(service_name.clone(), &*self.services.read().await)?;
         dep_chain.push((
             (proxy_ip, proxy_client),
             (service_ip, Client::new(service_name, None)),
         ));
         // create dedicated VXLANs across all the client/server pair of the dependency chain
         let upstream_ip = self.vxlan_chain_setup(dep_chain).await?;
-
-        // regenerate the service graphviz for debugging
-        // TODO: remove this from here!
-        let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Upstream {
             ip: upstream_ip.to_string(),
@@ -166,15 +169,7 @@ impl NullnetGrpcImpl {
 
         // unregister services that are no longer present
         for service_name in to_be_unregistered {
-            services_mut.entry(service_name).and_modify(|si| {
-                // re-check that it's still registered from this sender_ip to avoid race conditions
-                if let ServiceInfo::Registered(reg) = si {
-                    let (ip, _) = reg.ip_port();
-                    if ip == sender_ip {
-                        si.unregister();
-                    }
-                }
-            });
+            cleanup_vlans_invalidated_service(service_name.clone(), true, &mut services_mut).await?;
         }
 
         // re-register services that are still present
@@ -187,9 +182,6 @@ impl NullnetGrpcImpl {
         }
 
         drop(services_mut);
-
-        // regenerate the service graphviz for debugging
-        let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Empty {}))
     }
@@ -206,13 +198,17 @@ impl NullnetGrpcImpl {
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
-                // check if the link is already set up
-                let server_service = services.read().await.get(&server.name()).cloned();
-                if let Some(ServiceInfo::Registered(reg)) = server_service
-                    && reg.is_client_setup(&client).is_some()
-                {
+                // add chain and check if the link is already set up
+                let mut services_guard = services.write().await;
+                let Some(ServiceInfo::Registered(reg)) = services_guard.get_mut(&server.name())
+                else {
+                    return None;
+                };
+                if reg.is_client_setup(&client).is_some() {
+                    reg.add_chain(&client);
                     return None;
                 }
+                drop(services_guard);
 
                 let mut last_id = last_registered_vxlan.lock().await;
                 *last_id += 1;
@@ -292,7 +288,8 @@ impl NullnetGrpcImpl {
                         if let ServiceInfo::Registered(reg) = si {
                             let time_ms = init_time.elapsed().as_millis();
                             let ci = ClientInfo::new(br_ip_client, br_ip_server, vxlan_id, time_ms);
-                            reg.add_client(client, ci);
+                            reg.add_client(client.clone(), ci);
+                            reg.add_chain(&client);
                         }
                     });
 
@@ -310,36 +307,6 @@ impl NullnetGrpcImpl {
         ret_val
             .ok_or("No valid upstream IP found after VXLAN chain setup")
             .handle_err(location!())
-    }
-
-    async fn generate_graphviz(&self) -> Result<(), Error> {
-        let services = self.services.read().await.clone();
-        let mut graphviz = String::from(
-            "digraph G {\n\
-                \tbgcolor=grey10;\n\
-                \tnode [color=white, fontcolor=white];\n\
-                \tedge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];\n\n",
-        );
-        for (name, info) in services {
-            let style = info.graphviz_style();
-            writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!())?;
-            if let ServiceInfo::Registered(registered) = info {
-                for (c, ci) in registered.clients() {
-                    let c_name = c.name();
-                    let edge_label = ci.graphviz_edge_label(false);
-                    writeln!(graphviz, "\t\"{c_name}\" -> \"{name}\" {edge_label};")
-                        .handle_err(location!())?;
-                }
-            }
-            graphviz.push('\n');
-        }
-        graphviz = graphviz.trim().to_string();
-        graphviz.push_str("\n}\n");
-        tokio::fs::write("graph.dot", graphviz)
-            .await
-            .handle_err(location!())?;
-
-        Ok(())
     }
 }
 

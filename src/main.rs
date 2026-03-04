@@ -1,8 +1,9 @@
-mod clients;
+mod graphviz;
 mod nullnet_grpc_impl;
 mod orchestrator;
 mod proto;
-mod service_info;
+mod services;
+mod vlan;
 
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpcServer;

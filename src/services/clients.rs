@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub(crate) struct Clients {
     /// Mapping from service client to client info.
     clients: HashMap<Client, ClientInfo>,
@@ -19,9 +19,13 @@ impl Clients {
     pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
         &self.clients
     }
+
+    pub(crate) fn clients_mut(&mut self) -> &mut HashMap<Client, ClientInfo> {
+        &mut self.clients
+    }
 }
 
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) struct Client {
     name: String,
     proxy: Option<IpAddr>,
@@ -45,12 +49,13 @@ impl Client {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ClientInfo {
     client_br: Ipv4Addr,
     server_br: Ipv4Addr,
     vxlan_id: u32,
     time_ms: u128,
+    active_chains: usize,
 }
 
 impl ClientInfo {
@@ -65,22 +70,35 @@ impl ClientInfo {
             server_br,
             vxlan_id,
             time_ms,
+            active_chains: 0,
         }
     }
 
-    pub(crate) fn graphviz_edge_label(&self, show_ends: bool) -> String {
-        let Self {
-            client_br: client_veth,
-            server_br: server_veth,
-            vxlan_id,
-            time_ms,
-        } = self;
-        if show_ends {
-            format!(
-                "[label=\"VXLAN {vxlan_id} [{time_ms}ms]\", taillabel=\"{client_veth}\", headlabel=\"{server_veth}\"]"
-            )
-        } else {
-            format!("[label=\"VXLAN {vxlan_id} [{time_ms}ms]\"]")
-        }
+    pub(crate) fn client_br(&self) -> Ipv4Addr {
+        self.client_br
+    }
+
+    pub(crate) fn server_br(&self) -> Ipv4Addr {
+        self.server_br
+    }
+
+    pub(crate) fn vxlan_id(&self) -> u32 {
+        self.vxlan_id
+    }
+
+    pub(crate) fn time_ms(&self) -> u128 {
+        self.time_ms
+    }
+
+    pub(crate) fn add_active_chain(&mut self) {
+        self.active_chains += 1;
+    }
+
+    pub(crate) fn remove_active_chains(&mut self, num_chains: usize) {
+        self.active_chains = self.active_chains.saturating_sub(num_chains);
+    }
+
+    pub(crate) fn active_chains(&self) -> usize {
+        self.active_chains
     }
 }

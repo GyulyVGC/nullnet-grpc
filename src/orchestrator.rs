@@ -1,5 +1,7 @@
-use crate::proto::nullnet_grpc::{HostMapping, MsgId, VxlanMessage, VxlanSetup, vxlan_message};
+use crate::proto::nullnet_grpc::{HostMapping, MsgId, VxlanMessage, vxlan_message, VxlanSetup};
 use ipnetwork::Ipv4Network;
+use crate::services::service_info::ServiceInfo;
+use crate::vlan::cleanup_vlans_invalidated_service;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -28,6 +30,7 @@ impl Orchestrator {
         &self,
         request: Request<Streaming<MsgId>>,
         outbound: OutboundStream,
+        services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
     ) -> Result<(), Error> {
         let client_ip = request
             .remote_addr()
@@ -45,7 +48,32 @@ impl Orchestrator {
                     let _ = tx.send(());
                 }
             }
+
             println!("Control channel from '{client_ip}' closed");
+            // remove client from orchestrator state
+            orchestrator.clients.write().await.remove(&client_ip);
+
+            // get all services running on client_ip
+            let closed_services: Vec<String> = services
+                .read()
+                .await
+                .iter()
+                .filter(|(_, info)| {
+                    if let ServiceInfo::Registered(reg) = info {
+                        let (reg_ip, _) = reg.ip_port();
+                        reg_ip == client_ip
+                    } else {
+                        false
+                    }
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+
+            // cleanup VLANs for all closed services
+            for closed_service in closed_services {
+                let _ = cleanup_vlans_invalidated_service(closed_service, true, &mut *services.write().await)
+                    .await;
+            }
         });
 
         Ok(())
