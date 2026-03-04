@@ -44,7 +44,7 @@ pub(crate) async fn cleanup_vxlans_chain(
         return Ok(());
     };
 
-    let num_proxy_clients = reg.clients().iter().filter(|(c, _)| c.is_proxy()).count();
+    let num_proxy_clients = reg.clients().iter().filter(|(c, _)| c.is_proxy().is_some()).count();
 
     let chain = reg.dependency_chain(name.to_string(), services)?;
 
@@ -58,7 +58,15 @@ pub(crate) async fn cleanup_vxlans_chain(
     }
 
     if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
-        reg.clients_mut().retain(|c, _| !c.is_proxy());
+        // TODO: remove these clones where we iter and also need mutable access inside the loop
+        for (c, ci) in reg.clients().clone() {
+            if let Some(proxy_ip) = c.is_proxy() {
+                for dest in [reg.ip_port().0, proxy_ip] {
+                    let _ = orchestrator.send_vxlan_teardown(dest, ci.vxlan_id()).await;
+                }
+                reg.clients_mut().remove(&c);
+            }
+        }
     }
 
     Ok(())

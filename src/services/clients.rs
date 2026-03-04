@@ -44,8 +44,8 @@ impl Client {
         }
     }
 
-    pub(crate) fn is_proxy(&self) -> bool {
-        self.proxy.is_some()
+    pub(crate) fn is_proxy(&self) -> Option<IpAddr> {
+        self.proxy
     }
 }
 

@@ -132,6 +132,8 @@ impl Orchestrator {
     ) -> Result<(), Error> {
         let clients = self.clients.read().await;
         if let Some(outbound) = clients.get(&dest) {
+            println!("Sending VXLAN {vxlan_id} teardown to client {dest}");
+
             let message = vxlan_message::Message::VxlanTeardown(VxlanTeardown {
                 ns_name: format!("ns_{vxlan_id}"),
                 br_name: format!("br_{vxlan_id}"),

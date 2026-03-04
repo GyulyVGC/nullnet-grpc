@@ -245,7 +245,7 @@ impl NullnetGrpcImpl {
                     name: server.name(),
                 });
 
-                let upstream_ip = if client.is_proxy() {
+                let upstream_ip = if client.is_proxy().is_some() {
                     Some(br_ip_server)
                 } else {
                     None
