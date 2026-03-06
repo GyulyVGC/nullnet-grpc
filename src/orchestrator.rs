@@ -8,6 +8,7 @@ use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
@@ -72,11 +73,12 @@ impl Orchestrator {
                 .collect();
 
             // cleanup VXLANs for all closed services
+            let mut services_guard = services.write().await;
             for closed_service in closed_services {
                 let _ = cleanup_vxlans_invalidated_service(
                     closed_service,
                     true,
-                    &mut *services.write().await,
+                    &mut services_guard,
                     &orchestrator,
                 )
                 .await;
@@ -95,14 +97,14 @@ impl Orchestrator {
         remote: IpAddr,
         host_mapping: Option<HostMapping>,
     ) -> Result<(), Error> {
-        let clients = self.clients.read().await;
-        if let Some(outbound) = clients.get(&dest) {
+        let outbound = self.clients.read().await.get(&dest).cloned();
+        if let Some(outbound) = outbound {
             let (tx, rx) = oneshot::channel();
             let id = Uuid::new_v4().to_string();
             self.pending.lock().await.insert(id.clone(), tx);
 
             let message = vxlan_message::Message::VxlanSetup(VxlanSetup {
-                msg_id: Some(MsgId { id }),
+                msg_id: Some(MsgId { id: id.clone() }),
                 vxlan_id,
                 ns_name: format!("ns_{vxlan_id}"),
                 ns_net: ns_net.to_string(),
@@ -113,13 +115,22 @@ impl Orchestrator {
                 host_mapping,
             });
 
-            outbound
+            if let Err(e) = outbound
                 .send(Ok(VxlanMessage {
                     message: Some(message),
                 }))
                 .await
-                .handle_err(location!())?;
-            rx.await.handle_err(location!())
+            {
+                self.pending.lock().await.remove(&id);
+                return Err(e.to_string()).handle_err(location!());
+            }
+
+            if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
+                result.handle_err(location!())
+            } else {
+                self.pending.lock().await.remove(&id);
+                Err(format!("VXLAN setup ack timed out for {dest}")).handle_err(location!())
+            }
         } else {
             Err(format!("Client with IP {dest} not found")).handle_err(location!())
         }
@@ -130,8 +141,8 @@ impl Orchestrator {
         dest: IpAddr,
         vxlan_id: u32,
     ) -> Result<(), Error> {
-        let clients = self.clients.read().await;
-        if let Some(outbound) = clients.get(&dest) {
+        let outbound = self.clients.read().await.get(&dest).cloned();
+        if let Some(outbound) = outbound {
             println!("Sending VXLAN {vxlan_id} teardown to client {dest}");
 
             let message = vxlan_message::Message::VxlanTeardown(VxlanTeardown {

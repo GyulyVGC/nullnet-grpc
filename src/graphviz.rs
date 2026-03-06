@@ -21,7 +21,7 @@ pub(crate) async fn generate_graphviz(services: Arc<RwLock<HashMap<String, Servi
             let _ = writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!());
             if let ServiceInfo::Registered(registered) = info {
                 for (c, ci) in registered.clients() {
-                    let c_name = c.name();
+                    let c_name = c.display_name();
                     let edge_label = ci.graphviz_edge_label(false);
                     let _ = writeln!(graphviz, "\t\"{c_name}\" -> \"{name}\" {edge_label};")
                         .handle_err(location!());

@@ -36,7 +36,11 @@ impl Client {
         Self { name, proxy }
     }
 
-    pub(crate) fn name(&self) -> String {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn display_name(&self) -> String {
         if let Some(proxy) = self.proxy {
             format!("{} (via {})", self.name, proxy)
         } else {
@@ -70,6 +74,16 @@ impl ClientInfo {
             server_br,
             vxlan_id,
             time_ms,
+            active_chains: 0,
+        }
+    }
+
+    pub(crate) fn placeholder() -> Self {
+        Self {
+            client_br: Ipv4Addr::UNSPECIFIED,
+            server_br: Ipv4Addr::UNSPECIFIED,
+            vxlan_id: 0,
+            time_ms: 0,
             active_chains: 0,
         }
     }

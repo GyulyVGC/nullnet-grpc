@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc as tokio_mpsc;
 use tokio::time::Instant;
 
 const SERVICES_PATH: &str = "./services/services.toml";
@@ -39,8 +40,14 @@ impl ServicesToml {
         let mut services_directory = PathBuf::from(SERVICES_PATH);
         services_directory.pop();
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = RecommendedWatcher::new(tx, Config::default()).handle_err(location!())?;
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let mut watcher = RecommendedWatcher::new(
+            move |event| {
+                let _ = tx.send(event);
+            },
+            Config::default(),
+        )
+        .handle_err(location!())?;
         watcher
             .watch(&services_directory, RecursiveMode::Recursive)
             .handle_err(location!())?;
@@ -48,11 +55,15 @@ impl ServicesToml {
         let mut last_update_time = Instant::now().sub(Duration::from_secs(60));
 
         loop {
-            // only update services if the event is related to a file change
-            if let Ok(Ok(Event {
+            let event = rx.recv().await;
+            if event.is_none() {
+                println!("File watcher channel closed, stopping watch");
+                break;
+            }
+            if let Some(Ok(Event {
                 kind: EventKind::Modify(_),
                 ..
-            })) = rx.recv()
+            })) = event
             {
                 // debounce duplicated events
                 if last_update_time.elapsed().as_millis() > 100 {
@@ -112,6 +123,8 @@ impl ServicesToml {
                 }
             }
         }
+
+        Ok(())
     }
 
     fn services_map(self) -> HashMap<String, ServiceInfo> {

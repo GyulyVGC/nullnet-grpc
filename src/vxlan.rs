@@ -10,15 +10,14 @@ pub(crate) async fn cleanup_vxlans_invalidated_service(
     orchestrator: &Orchestrator,
 ) -> Result<(), Error> {
     let mut services_to_cleanup = Vec::new();
-    for (service_name, si) in services.clone() {
+    for (service_name, si) in services.iter() {
         let ServiceInfo::Registered(reg) = si else {
             continue;
         };
 
-        if invalidated_service.eq(&service_name)
-            || reg.dependencies().contains(&invalidated_service)
+        if invalidated_service == *service_name || reg.dependencies().contains(&invalidated_service)
         {
-            services_to_cleanup.push(service_name);
+            services_to_cleanup.push(service_name.clone());
         }
     }
 
@@ -43,12 +42,16 @@ pub(crate) async fn cleanup_vxlans_chain(
         return Ok(());
     };
 
-    let num_proxy_clients = reg.clients().iter().filter(|(c, _)| c.is_proxy().is_some()).count();
+    let num_proxy_clients = reg
+        .clients()
+        .iter()
+        .filter(|(c, _)| c.is_proxy().is_some())
+        .count();
 
     let chain = reg.dependency_chain(name.to_string(), services)?;
 
     for ((client_ip, client), (_, server)) in chain {
-        if let Some(s) = services.get_mut(&server.name())
+        if let Some(s) = services.get_mut(server.name())
             && let ServiceInfo::Registered(reg) = s
         {
             reg.remove_chains(client_ip, &client, num_proxy_clients, orchestrator)
@@ -57,14 +60,24 @@ pub(crate) async fn cleanup_vxlans_chain(
     }
 
     if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
-        // TODO: remove these clones where we iter and also need mutable access inside the loop
-        for (c, ci) in reg.clients().clone() {
-            if let Some(proxy_ip) = c.is_proxy() {
-                for dest in [reg.ip_port().0, proxy_ip] {
-                    let _ = orchestrator.send_vxlan_teardown(dest, ci.vxlan_id()).await;
-                }
-                reg.clients_mut().remove(&c);
+        let service_ip = reg.ip_port().0;
+        let proxy_teardowns: Vec<_> = reg
+            .clients()
+            .iter()
+            .filter_map(|(c, ci)| {
+                c.is_proxy()
+                    .map(|proxy_ip| (c.clone(), ci.vxlan_id(), proxy_ip))
+            })
+            .collect();
+
+        for (_, vxlan_id, proxy_ip) in &proxy_teardowns {
+            for dest in [service_ip, *proxy_ip] {
+                let _ = orchestrator.send_vxlan_teardown(dest, *vxlan_id).await;
             }
+        }
+
+        for (client, _, _) in proxy_teardowns {
+            reg.clients_mut().remove(&client);
         }
     }
 

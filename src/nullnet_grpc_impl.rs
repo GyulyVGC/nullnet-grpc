@@ -208,7 +208,7 @@ impl NullnetGrpcImpl {
 
                 // add chain and check if the link is already set up
                 let mut services_guard = services.write().await;
-                let Some(ServiceInfo::Registered(reg)) = services_guard.get_mut(&server.name())
+                let Some(ServiceInfo::Registered(reg)) = services_guard.get_mut(server.name())
                 else {
                     return None;
                 };
@@ -216,8 +216,11 @@ impl NullnetGrpcImpl {
                     reg.add_chain(&client);
                     return None;
                 }
+                // reserve the slot so concurrent requests see it as in-progress
+                reg.add_client(client.clone(), ClientInfo::placeholder());
                 drop(services_guard);
 
+                // TODO: check for VXLAN ID overflow (max 65535) and reclaim freed IDs
                 let mut last_id = last_registered_vxlan.lock().await;
                 *last_id += 1;
                 let vxlan_id = *last_id;
@@ -242,7 +245,7 @@ impl NullnetGrpcImpl {
 
                 let host_mapping = Some(HostMapping {
                     ip: br_ip_server.to_string(),
-                    name: server.name(),
+                    name: server.name().to_string(),
                 });
 
                 let upstream_ip = if client.is_proxy().is_some() {
@@ -251,55 +254,68 @@ impl NullnetGrpcImpl {
                     None
                 };
 
-                let mut join_set_inner = JoinSet::new();
-
                 let orch = orchestrator.clone();
-                join_set_inner.spawn(async move {
-                    // TODO: handle errors?
-                    let _ = orch
-                        .send_vxlan_setup(
-                            server_ethernet,
-                            vxlan_id,
-                            ns_net_server,
-                            br_net_server,
-                            client_ethernet,
-                            None,
-                        )
-                        .await;
-                    println!("{server_ethernet} acknowledged");
-                });
+                let server_res = orch.send_vxlan_setup(
+                    server_ethernet,
+                    vxlan_id,
+                    ns_net_server,
+                    br_net_server,
+                    client_ethernet,
+                    None,
+                );
+                let orch2 = orchestrator.clone();
+                let client_res = orch2.send_vxlan_setup(
+                    client_ethernet,
+                    vxlan_id,
+                    ns_net_client,
+                    br_net_client,
+                    server_ethernet,
+                    host_mapping,
+                );
 
-                let orch = orchestrator.clone();
-                join_set_inner.spawn(async move {
-                    // TODO: handle errors?
-                    let _ = orch
-                        .send_vxlan_setup(
-                            client_ethernet,
-                            vxlan_id,
-                            ns_net_client,
-                            br_net_client,
-                            server_ethernet,
-                            host_mapping,
-                        )
-                        .await;
-                    println!("{client_ethernet} acknowledged");
-                });
+                let (server_ok, client_ok) = tokio::join!(server_res, client_res);
 
-                while join_set_inner.join_next().await.is_some() {}
+                if server_ok.is_err() || client_ok.is_err() {
+                    // rollback: teardown whichever side succeeded
+                    if server_ok.is_ok() {
+                        let _ = orchestrator
+                            .send_vxlan_teardown(server_ethernet, vxlan_id)
+                            .await;
+                    }
+                    if client_ok.is_ok() {
+                        let _ = orchestrator
+                            .send_vxlan_teardown(client_ethernet, vxlan_id)
+                            .await;
+                    }
+                    // remove placeholder
+                    if let Some(ServiceInfo::Registered(reg)) =
+                        services.write().await.get_mut(server.name())
+                    {
+                        reg.clients_mut().remove(&client);
+                    }
+                    return None;
+                }
+
+                println!("{server_ethernet} acknowledged");
+                println!("{client_ethernet} acknowledged");
 
                 // register the link between the two services
-                services
-                    .write()
-                    .await
-                    .entry(server.name())
-                    .and_modify(|si| {
-                        if let ServiceInfo::Registered(reg) = si {
-                            let time_ms = init_time.elapsed().as_millis();
-                            let ci = ClientInfo::new(br_ip_client, br_ip_server, vxlan_id, time_ms);
-                            reg.add_client(client.clone(), ci);
-                            reg.add_chain(&client);
-                        }
-                    });
+                let mut guard = services.write().await;
+                if let Some(ServiceInfo::Registered(reg)) = guard.get_mut(server.name()) {
+                    let time_ms = init_time.elapsed().as_millis();
+                    let ci = ClientInfo::new(br_ip_client, br_ip_server, vxlan_id, time_ms);
+                    reg.add_client(client.clone(), ci);
+                    reg.add_chain(&client);
+                } else {
+                    // service was unregistered during setup — teardown VXLANs
+                    drop(guard);
+                    let _ = orchestrator
+                        .send_vxlan_teardown(server_ethernet, vxlan_id)
+                        .await;
+                    let _ = orchestrator
+                        .send_vxlan_teardown(client_ethernet, vxlan_id)
+                        .await;
+                }
 
                 upstream_ip
             });

@@ -52,7 +52,4 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
     NullnetGrpcImpl::new().await
 }
 
-// TODO: support live reloading of services.toml on gRPC server
-// TODO: unregister services of machines whose control channel was closed
-// TODO: clean up VXLANs of unregistered services
 // TODO: reuse VXLAN IDs of unregistered services
