@@ -22,8 +22,11 @@ pub(crate) struct ServicesToml {
 
 impl ServicesToml {
     pub(crate) async fn load() -> Result<HashMap<String, ServiceInfo>, Error> {
-        // read services from file
-        let services_toml_str = tokio::fs::read_to_string(SERVICES_PATH)
+        Self::load_from(SERVICES_PATH).await
+    }
+
+    pub(crate) async fn load_from(path: &str) -> Result<HashMap<String, ServiceInfo>, Error> {
+        let services_toml_str = tokio::fs::read_to_string(path)
             .await
             .handle_err(location!())?;
         let services_toml: ServicesToml =
@@ -71,53 +74,8 @@ impl ServicesToml {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     if let Ok(loaded_services) = ServicesToml::load().await {
                         let services_mut = &mut *services.write().await;
-                        let services = services_mut.clone();
-
-                        // remove services that are no longer present in the config
-                        for name in services.keys() {
-                            if !loaded_services.contains_key(name) {
-                                let _ = cleanup_vxlans_invalidated_service(
-                                    name.clone(),
-                                    true,
-                                    services_mut,
-                                    &orchestrator,
-                                )
-                                .await;
-                                services_mut.remove(name);
-                            }
-                        }
-
-                        // add new services and update existing services (dependencies and reachability)
-                        for (loaded_name, loaded_info) in loaded_services {
-                            if let Some(old_info) = services.get(&loaded_name) {
-                                if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable()
-                                {
-                                    let _ = cleanup_vxlans_chain(
-                                        &loaded_name,
-                                        services_mut,
-                                        &orchestrator,
-                                    )
-                                    .await;
-                                }
-
-                                if loaded_info.dependencies() != old_info.dependencies() {
-                                    let _ = cleanup_vxlans_invalidated_service(
-                                        loaded_name.clone(),
-                                        false,
-                                        services_mut,
-                                        &orchestrator,
-                                    )
-                                    .await;
-                                }
-                            }
-
-                            services_mut
-                                .entry(loaded_name)
-                                .and_modify(|existing_info| {
-                                    existing_info.update_from_file(&loaded_info);
-                                })
-                                .or_insert(loaded_info);
-                        }
+                        apply_config_update(services_mut, loaded_services, &orchestrator)
+                            .await;
                     }
                     last_update_time = Instant::now();
                 }
@@ -127,7 +85,7 @@ impl ServicesToml {
         Ok(())
     }
 
-    fn services_map(self) -> HashMap<String, ServiceInfo> {
+    pub(crate) fn services_map(self) -> HashMap<String, ServiceInfo> {
         let mut ret_val: HashMap<String, ServiceInfo> = HashMap::new();
 
         // first insert proxy-unreachable services
@@ -142,6 +100,50 @@ impl ServicesToml {
         }
 
         ret_val
+    }
+}
+
+pub(crate) async fn apply_config_update(
+    services: &mut HashMap<String, ServiceInfo>,
+    loaded_services: HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    let snapshot = services.clone();
+
+    // remove services that are no longer present in the config
+    for name in snapshot.keys() {
+        if !loaded_services.contains_key(name) {
+            let _ =
+                cleanup_vxlans_invalidated_service(name.clone(), true, services, orchestrator)
+                    .await;
+            services.remove(name);
+        }
+    }
+
+    // add new services and update existing services (dependencies and reachability)
+    for (loaded_name, loaded_info) in loaded_services {
+        if let Some(old_info) = snapshot.get(&loaded_name) {
+            if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable() {
+                let _ = cleanup_vxlans_chain(&loaded_name, services, orchestrator).await;
+            }
+
+            if loaded_info.dependencies() != old_info.dependencies() {
+                let _ = cleanup_vxlans_invalidated_service(
+                    loaded_name.clone(),
+                    false,
+                    services,
+                    orchestrator,
+                )
+                .await;
+            }
+        }
+
+        services
+            .entry(loaded_name)
+            .and_modify(|existing_info| {
+                existing_info.update_from_file(&loaded_info);
+            })
+            .or_insert(loaded_info);
     }
 }
 

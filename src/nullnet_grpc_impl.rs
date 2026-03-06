@@ -109,17 +109,10 @@ impl NullnetGrpcImpl {
             return Ok(Response::new(upstream));
         }
 
-        let (service_ip, service_port) = registered.ip_port();
-
-        // setup dependent services' VXLANs
-        let mut dep_chain =
-            registered.dependency_chain(service_name.clone(), &*self.services.read().await)?;
-        dep_chain.push((
-            (proxy_ip, proxy_client),
-            (service_ip, Client::new(service_name, None)),
-        ));
-        // create dedicated VXLANs across all the client/server pair of the dependency chain
-        let upstream_ip = self.vxlan_chain_setup(dep_chain).await?;
+        let (_, service_port) = registered.ip_port();
+        let upstream_ip = self
+            .setup_proxy_chain(&service_name, proxy_ip, &client_ip.to_string())
+            .await?;
 
         Ok(Response::new(Upstream {
             ip: upstream_ip.to_string(),
@@ -144,6 +137,51 @@ impl NullnetGrpcImpl {
             sender_ip, req.services
         );
 
+        let service_list: Vec<(String, u16)> = req
+            .services
+            .into_iter()
+            .map(|s| Ok((s.name, u16::try_from(s.port).handle_err(location!())?)))
+            .collect::<Result<_, Error>>()?;
+
+        self.apply_services_list(sender_ip, &service_list).await?;
+
+        Ok(Response::new(Empty {}))
+    }
+
+    pub(crate) async fn setup_proxy_chain(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+    ) -> Result<Ipv4Addr, Error> {
+        let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
+
+        let guard = self.services.read().await;
+        let service_info = guard
+            .get(service_name)
+            .ok_or("Service not found")
+            .handle_err(location!())?;
+        let ServiceInfo::Registered(registered) = service_info else {
+            Err("Service is not registered").handle_err(location!())?
+        };
+        let service_ip = registered.ip_port().0;
+        let mut dep_chain =
+            registered.dependency_chain(service_name.to_string(), &guard)?;
+        drop(guard);
+
+        dep_chain.push((
+            (proxy_ip, proxy_client),
+            (service_ip, Client::new(service_name.to_string(), None)),
+        ));
+
+        self.vxlan_chain_setup(dep_chain).await
+    }
+
+    pub(crate) async fn apply_services_list(
+        &self,
+        sender_ip: IpAddr,
+        service_list: &[(String, u16)],
+    ) -> Result<(), Error> {
         // get services previously registered from this sender_ip
         let previously_registered: Vec<String> = self
             .services
@@ -164,7 +202,7 @@ impl NullnetGrpcImpl {
         // get services that are no longer present
         let to_be_unregistered: Vec<String> = previously_registered
             .into_iter()
-            .filter(|name| !req.services.iter().any(|s| s.name == *name))
+            .filter(|name| !service_list.iter().any(|(s, _)| s == name))
             .collect();
 
         let mut services_mut = self.services.write().await;
@@ -181,17 +219,13 @@ impl NullnetGrpcImpl {
         }
 
         // re-register services that are still present
-        for service in req.services {
-            let service_port = u16::try_from(service.port).handle_err(location!())?;
-            let service_name = service.name;
-            services_mut.entry(service_name.clone()).and_modify(|si| {
-                si.register(sender_ip, service_port);
+        for (name, port) in service_list {
+            services_mut.entry(name.clone()).and_modify(|si| {
+                si.register(sender_ip, *port);
             });
         }
 
-        drop(services_mut);
-
-        Ok(Response::new(Empty {}))
+        Ok(())
     }
 
     pub(crate) async fn vxlan_chain_setup(
@@ -331,6 +365,25 @@ impl NullnetGrpcImpl {
         ret_val
             .ok_or("No valid upstream IP found after VXLAN chain setup")
             .handle_err(location!())
+    }
+}
+
+#[cfg(test)]
+impl NullnetGrpcImpl {
+    pub(crate) fn new_for_test(services: HashMap<String, ServiceInfo>) -> Self {
+        NullnetGrpcImpl {
+            services: Arc::new(RwLock::new(services)),
+            last_registered_vxlan: Arc::new(Mutex::new(100)),
+            orchestrator: Orchestrator::new(),
+        }
+    }
+
+    pub(crate) fn orchestrator(&self) -> &Orchestrator {
+        &self.orchestrator
+    }
+
+    pub(crate) fn services(&self) -> &Arc<RwLock<HashMap<String, ServiceInfo>>> {
+        &self.services
     }
 }
 

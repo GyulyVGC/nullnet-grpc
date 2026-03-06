@@ -1,0 +1,7 @@
+[[services]]
+name = "A"
+dependencies = ["C", "D"]
+
+[[services]]
+name = "B"
+dependencies = ["D"]

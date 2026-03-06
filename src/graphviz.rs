@@ -7,30 +7,40 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String {
+    let mut entries: Vec<_> = services.iter().collect();
+    entries.sort_by_key(|(name, _)| *name);
+
+    let mut graphviz = String::from(
+        "digraph G {\n\
+            \tbgcolor=grey10;\n\
+            \tnode [color=white, fontcolor=white];\n\
+            \tedge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];\n\n",
+    );
+    for (name, info) in entries {
+        let style = info.graphviz_style();
+        let _ = writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!());
+        if let ServiceInfo::Registered(registered) = info {
+            let mut edges: Vec<_> = registered.clients().iter().collect();
+            edges.sort_by_key(|(c, _)| c.display_name());
+            for (c, ci) in edges {
+                let c_name = c.display_name();
+                let edge_label = ci.graphviz_edge_label(false);
+                let _ = writeln!(graphviz, "\t\"{c_name}\" -> \"{name}\" {edge_label};")
+                    .handle_err(location!());
+            }
+        }
+        graphviz.push('\n');
+    }
+    graphviz = graphviz.trim().to_string();
+    graphviz.push_str("\n}\n");
+    graphviz
+}
+
 pub(crate) async fn generate_graphviz(services: Arc<RwLock<HashMap<String, ServiceInfo>>>) {
     loop {
         let services = services.read().await.clone();
-        let mut graphviz = String::from(
-            "digraph G {\n\
-                \tbgcolor=grey10;\n\
-                \tnode [color=white, fontcolor=white];\n\
-                \tedge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];\n\n",
-        );
-        for (name, info) in services {
-            let style = info.graphviz_style();
-            let _ = writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!());
-            if let ServiceInfo::Registered(registered) = info {
-                for (c, ci) in registered.clients() {
-                    let c_name = c.display_name();
-                    let edge_label = ci.graphviz_edge_label(false);
-                    let _ = writeln!(graphviz, "\t\"{c_name}\" -> \"{name}\" {edge_label};")
-                        .handle_err(location!());
-                }
-            }
-            graphviz.push('\n');
-        }
-        graphviz = graphviz.trim().to_string();
-        graphviz.push_str("\n}\n");
+        let graphviz = render_graphviz(&services);
         let _ = tokio::fs::write("graph.dot", graphviz)
             .await
             .handle_err(location!());

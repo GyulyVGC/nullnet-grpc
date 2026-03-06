@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod tests;
 mod graphviz;
 mod nullnet_grpc_impl;
 mod orchestrator;

@@ -1,0 +1,17 @@
+digraph G {
+	bgcolor=grey10;
+	node [color=white, fontcolor=white];
+	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
+
+	"A" [style=dashed, color=green];
+
+	"B" [style=solid, color=green];
+	"10.0.0.2 (via 7.7.7.7)" -> "B" [label="VXLAN 106 [0ms]"];
+
+	"C" [style=dashed, color=green];
+	"B" -> "C" [label="VXLAN 105 [0ms]"];
+
+	"D" [style=solid, color=green];
+
+	"E" [style=dashed, color=green];
+}

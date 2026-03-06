@@ -53,39 +53,49 @@ impl Orchestrator {
             }
 
             println!("Control channel from '{client_ip}' closed");
-            // remove client from orchestrator state
-            orchestrator.clients.write().await.remove(&client_ip);
-
-            // get all services running on client_ip
-            let closed_services: Vec<String> = services
-                .read()
-                .await
-                .iter()
-                .filter(|(_, info)| {
-                    if let ServiceInfo::Registered(reg) = info {
-                        let (reg_ip, _) = reg.ip_port();
-                        reg_ip == client_ip
-                    } else {
-                        false
-                    }
-                })
-                .map(|(name, _)| name.clone())
-                .collect();
-
-            // cleanup VXLANs for all closed services
-            let mut services_guard = services.write().await;
-            for closed_service in closed_services {
-                let _ = cleanup_vxlans_invalidated_service(
-                    closed_service,
-                    true,
-                    &mut services_guard,
-                    &orchestrator,
-                )
+            orchestrator
+                .handle_node_disconnect(client_ip, &services)
                 .await;
-            }
         });
 
         Ok(())
+    }
+
+    pub(crate) async fn remove_client(&self, ip: &IpAddr) {
+        self.clients.write().await.remove(ip);
+    }
+
+    pub(crate) async fn handle_node_disconnect(
+        &self,
+        client_ip: IpAddr,
+        services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
+    ) {
+        self.remove_client(&client_ip).await;
+
+        let closed_services: Vec<String> = services
+            .read()
+            .await
+            .iter()
+            .filter_map(|(name, info)| {
+                if let ServiceInfo::Registered(reg) = info {
+                    if reg.ip_port().0 == client_ip {
+                        return Some(name.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        let mut services_guard = services.write().await;
+        for closed_service in closed_services {
+            let _ = cleanup_vxlans_invalidated_service(
+                closed_service,
+                true,
+                &mut services_guard,
+                self,
+            )
+            .await;
+        }
     }
 
     pub(crate) async fn send_vxlan_setup(
@@ -160,5 +170,29 @@ impl Orchestrator {
         } else {
             Err(format!("Client with IP {dest} not found")).handle_err(location!())
         }
+    }
+}
+
+#[cfg(test)]
+impl Orchestrator {
+    pub(crate) async fn register_fake_client(&self, ip: IpAddr) {
+        use crate::proto::nullnet_grpc::vxlan_message;
+
+        let (tx, mut rx) = mpsc::channel::<Result<VxlanMessage, Status>>(64);
+        self.clients.write().await.insert(ip, tx);
+
+        let pending = self.pending.clone();
+        tokio::spawn(async move {
+            while let Some(Ok(msg)) = rx.recv().await {
+                // auto-ack VxlanSetup messages
+                if let Some(vxlan_message::Message::VxlanSetup(setup)) = msg.message {
+                    if let Some(msg_id) = setup.msg_id {
+                        if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+            }
+        });
     }
 }
