@@ -3,7 +3,6 @@ use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::Error;
 use std::collections::HashMap;
 
-// TODO: cleanup VXLANs (at the moment we're only removing clients from services map)
 pub(crate) async fn cleanup_vxlans_invalidated_service(
     invalidated_service: String,
     is_failed: bool,
