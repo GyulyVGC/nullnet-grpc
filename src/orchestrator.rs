@@ -1,8 +1,8 @@
 use crate::proto::nullnet_grpc::{
     HostMapping, MsgId, VxlanMessage, VxlanSetup, VxlanTeardown, vxlan_message,
 };
+use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::service_info::ServiceInfo;
-use crate::vxlan::{cleanup_vxlans_chain, cleanup_vxlans_invalidated_service};
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -72,44 +72,9 @@ impl Orchestrator {
     ) {
         self.remove_client(&client_ip).await;
 
-        let closed_services: Vec<String> = services
-            .read()
-            .await
-            .iter()
-            .filter_map(|(name, info)| {
-                if let ServiceInfo::Registered(reg) = info
-                    && reg.ip_port().0 == client_ip
-                {
-                    return Some(name.clone());
-                }
-                None
-            })
-            .collect();
-
         let mut services_guard = services.write().await;
-        for closed_service in closed_services {
-            let _ =
-                cleanup_vxlans_invalidated_service(closed_service, true, &mut services_guard, self)
-                    .await;
-        }
-
-        // clean up proxy chains from the disconnected node
-        let proxy_services: Vec<String> = services_guard
-            .iter()
-            .filter(|(_, si)| {
-                if let ServiceInfo::Registered(reg) = si {
-                    reg.clients()
-                        .keys()
-                        .any(|c| c.is_proxy() == Some(client_ip))
-                } else {
-                    false
-                }
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-        for name in proxy_services {
-            let _ = cleanup_vxlans_chain(&name, &mut services_guard, self, Some(client_ip)).await;
-        }
+        let changes = detect_node_disconnect_changes(&services_guard, client_ip);
+        apply_changes(changes, &mut services_guard, None, self).await;
     }
 
     pub(crate) async fn send_vxlan_setup(

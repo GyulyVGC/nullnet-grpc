@@ -4,10 +4,10 @@ use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
     Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VxlanMessage,
 };
+use crate::services::changes::{apply_changes, detect_services_list_changes};
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
-use crate::vxlan::cleanup_vxlans_invalidated_service;
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -199,41 +199,10 @@ impl NullnetGrpcImpl {
         sender_ip: IpAddr,
         service_list: &[(String, u16)],
     ) -> Result<(), Error> {
-        // get services previously registered from this sender_ip
-        let previously_registered: Vec<String> = self
-            .services
-            .read()
-            .await
-            .iter()
-            .filter_map(|(name, si)| {
-                if let ServiceInfo::Registered(reg) = si {
-                    let (ip, _) = reg.ip_port();
-                    if ip == sender_ip {
-                        return Some(name.clone());
-                    }
-                }
-                None
-            })
-            .collect();
-
-        // get services that are no longer present
-        let to_be_unregistered: Vec<String> = previously_registered
-            .into_iter()
-            .filter(|name| !service_list.iter().any(|(s, _)| s == name))
-            .collect();
-
         let mut services_mut = self.services.write().await;
 
-        // unregister services that are no longer present
-        for service_name in to_be_unregistered {
-            cleanup_vxlans_invalidated_service(
-                service_name.clone(),
-                true,
-                &mut services_mut,
-                &self.orchestrator,
-            )
-            .await?;
-        }
+        let changes = detect_services_list_changes(&services_mut, sender_ip, service_list);
+        apply_changes(changes, &mut services_mut, None, &self.orchestrator).await;
 
         // re-register services that are still present
         for (name, port) in service_list {

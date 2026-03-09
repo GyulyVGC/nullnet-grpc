@@ -5,7 +5,6 @@ mod proto;
 mod services;
 #[cfg(test)]
 mod tests;
-mod vxlan;
 
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpcServer;

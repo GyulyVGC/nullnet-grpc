@@ -2,25 +2,25 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Clone, Default, Debug)]
-pub(crate) struct Clients {
+pub(super) struct Clients {
     /// Mapping from service client to client info.
     clients: HashMap<Client, ClientInfo>,
 }
 
 impl Clients {
-    pub(crate) fn add_client(&mut self, client: Client, client_info: ClientInfo) {
+    pub(super) fn add_client(&mut self, client: Client, client_info: ClientInfo) {
         self.clients.insert(client, client_info);
     }
 
-    pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Ipv4Addr> {
+    pub(super) fn is_client_setup(&self, client: &Client) -> Option<Ipv4Addr> {
         self.clients.get(client).map(|ci| ci.server_br)
     }
 
-    pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
+    pub(super) fn clients(&self) -> &HashMap<Client, ClientInfo> {
         &self.clients
     }
 
-    pub(crate) fn clients_mut(&mut self) -> &mut HashMap<Client, ClientInfo> {
+    pub(super) fn clients_mut(&mut self) -> &mut HashMap<Client, ClientInfo> {
         &mut self.clients
     }
 }
@@ -104,15 +104,15 @@ impl ClientInfo {
         self.time_ms
     }
 
-    pub(crate) fn add_active_chain(&mut self) {
+    pub(super) fn add_active_chain(&mut self) {
         self.active_chains += 1;
     }
 
-    pub(crate) fn remove_active_chains(&mut self, num_chains: usize) {
+    pub(super) fn remove_active_chains(&mut self, num_chains: usize) {
         self.active_chains = self.active_chains.saturating_sub(num_chains);
     }
 
-    pub(crate) fn active_chains(&self) -> usize {
+    pub(super) fn active_chains(&self) -> usize {
         self.active_chains
     }
 }

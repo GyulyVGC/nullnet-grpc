@@ -1,6 +1,6 @@
 use crate::orchestrator::Orchestrator;
+use crate::services::changes::{apply_changes, detect_config_changes};
 use crate::services::service_info::ServiceInfo;
-use crate::vxlan::{cleanup_vxlans_chain, cleanup_vxlans_invalidated_service};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::Deserialize;
@@ -115,42 +115,8 @@ pub(crate) async fn apply_config_update(
     loaded_services: HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
 ) {
-    let snapshot = services.clone();
-
-    // remove services that are no longer present in the config
-    for name in snapshot.keys() {
-        if !loaded_services.contains_key(name) {
-            let _ = cleanup_vxlans_invalidated_service(name.clone(), true, services, orchestrator)
-                .await;
-            services.remove(name);
-        }
-    }
-
-    // add new services and update existing services (dependencies and reachability)
-    for (loaded_name, loaded_info) in loaded_services {
-        if let Some(old_info) = snapshot.get(&loaded_name) {
-            if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable() {
-                let _ = cleanup_vxlans_chain(&loaded_name, services, orchestrator, None).await;
-            }
-
-            if loaded_info.dependencies() != old_info.dependencies() {
-                let _ = cleanup_vxlans_invalidated_service(
-                    loaded_name.clone(),
-                    false,
-                    services,
-                    orchestrator,
-                )
-                .await;
-            }
-        }
-
-        services
-            .entry(loaded_name)
-            .and_modify(|existing_info| {
-                existing_info.update_from_file(&loaded_info);
-            })
-            .or_insert(loaded_info);
-    }
+    let changes = detect_config_changes(services, &loaded_services);
+    apply_changes(changes, services, Some(&loaded_services), orchestrator).await;
 }
 
 #[derive(Deserialize)]
