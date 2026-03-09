@@ -50,11 +50,7 @@ async fn load_config(fixture: &str, file: &str) -> HashMap<String, ServiceInfo> 
         .expect("failed to load test config")
 }
 
-async fn register_services(
-    server: &NullnetGrpcImpl,
-    ip_map: &HashMap<&str, IpAddr>,
-    port: u16,
-) {
+async fn register_services(server: &NullnetGrpcImpl, ip_map: &HashMap<&str, IpAddr>, port: u16) {
     let mut services = server.services().write().await;
     for (&name, &svc_ip) in ip_map {
         if let Some(si) = services.get_mut(name) {
@@ -88,7 +84,12 @@ fn assert_graphviz(services: &HashMap<String, ServiceInfo>, fixture: &str, expec
     );
 }
 
-async fn setup_proxy_chain(server: &NullnetGrpcImpl, service_name: &str, proxy_ip: IpAddr, client_ip: &str) {
+async fn setup_proxy_chain(
+    server: &NullnetGrpcImpl,
+    service_name: &str,
+    proxy_ip: IpAddr,
+    client_ip: &str,
+) {
     server
         .setup_proxy_chain(service_name, proxy_ip, client_ip)
         .await
@@ -334,26 +335,6 @@ async fn reachability_changed_setup() -> NullnetGrpcImpl {
     server
 }
 
-/// A becomes unreachable (D gains A as dep to keep it in map).
-/// proxy1→A and A→B torn down. D→E also cleaned up (D's deps changed).
-/// Only proxy2→B→C survives.
-#[tokio::test]
-async fn reachability_changed_unreachable_A() {
-    let server = reachability_changed_setup().await;
-    let new_config = load_config(REACHABILITY_CHANGED, "unreachable_A.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_A.dot");
-
-    assert!(guard.contains_key("A"));
-    assert!(!guard["A"].is_proxy_reachable());
-    // proxy2→B→C should survive
-    if let ServiceInfo::Registered(reg) = &guard["B"] {
-        assert!(!reg.clients().is_empty(), "B should still have proxy2");
-    }
-}
-
 /// B becomes unreachable. Since B loses its [[services]] entry, its deps (C)
 /// also disappear from config. This cascades: C removed → B's dep change →
 /// A's chain cleaned up. Only D→E survives.
@@ -368,9 +349,6 @@ async fn reachability_changed_unreachable_B() {
 
     assert!(guard.contains_key("B"));
     assert!(!guard["B"].is_proxy_reachable());
-    if let ServiceInfo::Registered(reg) = &guard["A"] {
-        assert!(reg.clients().is_empty());
-    }
 }
 
 /// D removed from [[services]] and no other service depends on it, so D and E

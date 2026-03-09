@@ -88,13 +88,9 @@ impl Orchestrator {
 
         let mut services_guard = services.write().await;
         for closed_service in closed_services {
-            let _ = cleanup_vxlans_invalidated_service(
-                closed_service,
-                true,
-                &mut services_guard,
-                self,
-            )
-            .await;
+            let _ =
+                cleanup_vxlans_invalidated_service(closed_service, true, &mut services_guard, self)
+                    .await;
         }
     }
 

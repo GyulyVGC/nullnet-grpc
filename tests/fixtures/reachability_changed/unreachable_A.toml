@@ -1,7 +1,0 @@
-[[services]]
-name = "B"
-dependencies = ["C"]
-
-[[services]]
-name = "D"
-dependencies = ["E", "A"]

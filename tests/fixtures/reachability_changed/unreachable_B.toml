@@ -1,6 +1,6 @@
 [[services]]
 name = "A"
-dependencies = ["B"]
+dependencies = ["B", "C"]
 
 [[services]]
 name = "D"

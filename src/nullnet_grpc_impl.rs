@@ -165,8 +165,7 @@ impl NullnetGrpcImpl {
             Err("Service is not registered").handle_err(location!())?
         };
         let service_ip = registered.ip_port().0;
-        let mut dep_chain =
-            registered.dependency_chain(service_name.to_string(), &guard)?;
+        let mut dep_chain = registered.dependency_chain(service_name.to_string(), &guard)?;
         drop(guard);
 
         dep_chain.push((

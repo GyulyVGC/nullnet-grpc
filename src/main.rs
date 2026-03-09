@@ -1,10 +1,10 @@
-#[cfg(test)]
-mod tests;
 mod graphviz;
 mod nullnet_grpc_impl;
 mod orchestrator;
 mod proto;
 mod services;
+#[cfg(test)]
+mod tests;
 mod vxlan;
 
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;

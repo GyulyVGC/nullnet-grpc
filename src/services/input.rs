@@ -74,8 +74,7 @@ impl ServicesToml {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     if let Ok(loaded_services) = ServicesToml::load().await {
                         let services_mut = &mut *services.write().await;
-                        apply_config_update(services_mut, loaded_services, &orchestrator)
-                            .await;
+                        apply_config_update(services_mut, loaded_services, &orchestrator).await;
                     }
                     last_update_time = Instant::now();
                 }
@@ -91,7 +90,15 @@ impl ServicesToml {
         // first insert proxy-unreachable services
         for s in &self.services {
             for d in &s.dependencies {
-                ret_val.insert(d.clone(), ServiceInfo::new(Vec::new(), false));
+                // as dependencies of d, take dependencies of s after d in the list
+                let d_deps = s
+                    .dependencies
+                    .iter()
+                    .skip_while(|dep| *dep != d)
+                    .skip(1)
+                    .map(|dep| dep.clone())
+                    .collect();
+                ret_val.insert(d.clone(), ServiceInfo::new(d_deps, false));
             }
         }
 
@@ -113,9 +120,8 @@ pub(crate) async fn apply_config_update(
     // remove services that are no longer present in the config
     for name in snapshot.keys() {
         if !loaded_services.contains_key(name) {
-            let _ =
-                cleanup_vxlans_invalidated_service(name.clone(), true, services, orchestrator)
-                    .await;
+            let _ = cleanup_vxlans_invalidated_service(name.clone(), true, services, orchestrator)
+                .await;
             services.remove(name);
         }
     }
