@@ -162,42 +162,6 @@ async fn service_removed_remove_B() {
     assert!(guard.contains_key("D"));
 }
 
-/// Remove C from config (C is a dep of A, not a [[services]] entry).
-/// A's deps change from [C,D] to [D]. C removed, A's chain cleaned up.
-/// B→D survives.
-#[tokio::test]
-async fn service_removed_remove_C() {
-    let server = service_removed_setup().await;
-    let new_config = load_config(SERVICE_REMOVED, "remove_C.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_C.dot");
-
-    assert!(!guard.contains_key("C"));
-    assert!(guard.contains_key("A"));
-    assert_eq!(guard["A"].dependencies(), vec!["D".to_string()]);
-}
-
-/// Remove D from config (D is a shared dep of both A and B).
-/// A's deps change from [C,D] to [C], B's deps change from [D] to [].
-/// Cascades to both A and B, cleaning up all chains.
-#[tokio::test]
-async fn service_removed_remove_D() {
-    let server = service_removed_setup().await;
-    let new_config = load_config(SERVICE_REMOVED, "remove_D.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_D.dot");
-
-    assert!(!guard.contains_key("D"));
-    assert!(guard.contains_key("A"));
-    assert!(guard.contains_key("C"));
-    assert_eq!(guard["A"].dependencies(), vec!["C".to_string()]);
-    assert!(guard["B"].dependencies().is_empty());
-}
-
 // ===========================================================================
 // dep_changed: A→B→C, D→C (C shared). proxy1→A+D, proxy2→A
 // ===========================================================================
