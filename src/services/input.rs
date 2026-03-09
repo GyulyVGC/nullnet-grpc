@@ -96,7 +96,7 @@ impl ServicesToml {
                     .iter()
                     .skip_while(|dep| *dep != d)
                     .skip(1)
-                    .map(|dep| dep.clone())
+                    .cloned()
                     .collect();
                 ret_val.insert(d.clone(), ServiceInfo::new(d_deps, false));
             }

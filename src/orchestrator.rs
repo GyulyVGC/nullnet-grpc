@@ -77,10 +77,10 @@ impl Orchestrator {
             .await
             .iter()
             .filter_map(|(name, info)| {
-                if let ServiceInfo::Registered(reg) = info {
-                    if reg.ip_port().0 == client_ip {
-                        return Some(name.clone());
-                    }
+                if let ServiceInfo::Registered(reg) = info
+                    && reg.ip_port().0 == client_ip
+                {
+                    return Some(name.clone());
                 }
                 None
             })
