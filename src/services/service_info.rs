@@ -1,7 +1,6 @@
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::Upstream;
 use crate::services::clients::{Client, ClientInfo, Clients};
-use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -112,20 +111,15 @@ impl RegisteredServiceInfo {
         &self,
         service_name: String,
         services: &HashMap<String, ServiceInfo>,
-    ) -> Result<Vec<((IpAddr, Client), (IpAddr, Client))>, Error> {
+    ) -> Vec<((Option<IpAddr>, Client), (Option<IpAddr>, Client))> {
         let mut chain = Vec::new();
-        let mut current_ip = self.ip;
+        let mut current_ip: Option<IpAddr> = Some(self.ip);
         let mut current_name = service_name;
         for dep in &self.dependencies {
-            let ServiceInfo::Registered(dep_reg) = services
-                .get(dep)
-                .cloned()
-                .ok_or("Dependency service not found")
-                .handle_err(location!())?
-            else {
-                return Err("Dependency service is not registered yet").handle_err(location!());
+            let dep_ip = match services.get(dep) {
+                Some(ServiceInfo::Registered(reg)) => Some(reg.ip),
+                _ => None,
             };
-            let dep_ip = dep_reg.ip;
             chain.push((
                 (current_ip, Client::new(current_name.clone(), None)),
                 (dep_ip, Client::new(dep.clone(), None)),
@@ -133,8 +127,7 @@ impl RegisteredServiceInfo {
             current_ip = dep_ip;
             current_name.clone_from(dep);
         }
-
-        Ok(chain)
+        chain
     }
 
     pub(crate) fn add_chain(&mut self, client: &Client) {

@@ -48,9 +48,10 @@ pub(crate) async fn cleanup_vxlans_chain(
         .filter(|(c, _)| c.is_proxy().is_some())
         .count();
 
-    let chain = reg.dependency_chain(name.to_string(), services)?;
+    let chain = reg.dependency_chain(name.to_string(), services);
 
     for ((client_ip, client), (_, server)) in chain {
+        let Some(client_ip) = client_ip else { continue };
         if let Some(s) = services.get_mut(server.name())
             && let ServiceInfo::Registered(reg) = s
         {

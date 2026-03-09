@@ -299,9 +299,9 @@ async fn reachability_changed_setup() -> NullnetGrpcImpl {
     server
 }
 
-/// B becomes unreachable. Since B loses its [[services]] entry, its deps (C)
-/// also disappear from config. This cascades: C removed → B's dep change →
-/// A's chain cleaned up. Only D→E survives.
+/// B becomes unreachable (loses its [[services]] entry). B's own proxy chain
+/// (proxy2→B) is torn down, but A's chain survives because B's deps are
+/// correctly inferred from A's dependency list. D→E also survives.
 #[tokio::test]
 async fn reachability_changed_unreachable_B() {
     let server = reachability_changed_setup().await;
