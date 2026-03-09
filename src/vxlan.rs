@@ -2,7 +2,7 @@ use crate::orchestrator::Orchestrator;
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::Error;
 use std::collections::HashMap;
-
+use std::net::IpAddr;
 pub(crate) async fn cleanup_vxlans_invalidated_service(
     invalidated_service: String,
     is_failed: bool,
@@ -22,7 +22,7 @@ pub(crate) async fn cleanup_vxlans_invalidated_service(
     }
 
     for name in services_to_cleanup {
-        let _ = cleanup_vxlans_chain(&name, services, orchestrator).await;
+        let _ = cleanup_vxlans_chain(&name, services, orchestrator, None).await;
     }
 
     // unregister failed service
@@ -33,10 +33,14 @@ pub(crate) async fn cleanup_vxlans_invalidated_service(
     Ok(())
 }
 
+/// Tears down VXLAN chains for a service's proxy clients and their dependency edges.
+/// If `proxy_filter` is `Some`, only chains from that specific proxy IP are cleaned up
+/// (e.g. when a proxy node disconnects). If `None`, all proxy chains are cleaned up.
 pub(crate) async fn cleanup_vxlans_chain(
     name: &str,
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
+    proxy_filter: Option<IpAddr>,
 ) -> Result<(), Error> {
     let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
         return Ok(());
@@ -45,7 +49,10 @@ pub(crate) async fn cleanup_vxlans_chain(
     let num_proxy_clients = reg
         .clients()
         .iter()
-        .filter(|(c, _)| c.is_proxy().is_some())
+        .filter(|(c, _)| match proxy_filter {
+            Some(ip) => c.is_proxy() == Some(ip),
+            None => c.is_proxy().is_some(),
+        })
         .count();
 
     let chain = reg.dependency_chain(name.to_string(), services);
@@ -66,8 +73,12 @@ pub(crate) async fn cleanup_vxlans_chain(
             .clients()
             .iter()
             .filter_map(|(c, ci)| {
-                c.is_proxy()
-                    .map(|proxy_ip| (c.clone(), ci.vxlan_id(), proxy_ip))
+                let pip = c.is_proxy()?;
+                if proxy_filter.is_none() || proxy_filter == Some(pip) {
+                    Some((c.clone(), ci.vxlan_id(), pip))
+                } else {
+                    None
+                }
             })
             .collect();
 

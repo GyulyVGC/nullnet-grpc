@@ -2,7 +2,7 @@ use crate::proto::nullnet_grpc::{
     HostMapping, MsgId, VxlanMessage, VxlanSetup, VxlanTeardown, vxlan_message,
 };
 use crate::services::service_info::ServiceInfo;
-use crate::vxlan::cleanup_vxlans_invalidated_service;
+use crate::vxlan::{cleanup_vxlans_chain, cleanup_vxlans_invalidated_service};
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -91,6 +91,24 @@ impl Orchestrator {
             let _ =
                 cleanup_vxlans_invalidated_service(closed_service, true, &mut services_guard, self)
                     .await;
+        }
+
+        // clean up proxy chains from the disconnected node
+        let proxy_services: Vec<String> = services_guard
+            .iter()
+            .filter(|(_, si)| {
+                if let ServiceInfo::Registered(reg) = si {
+                    reg.clients()
+                        .keys()
+                        .any(|c| c.is_proxy() == Some(client_ip))
+                } else {
+                    false
+                }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in proxy_services {
+            let _ = cleanup_vxlans_chain(&name, &mut services_guard, self, Some(client_ip)).await;
         }
     }
 

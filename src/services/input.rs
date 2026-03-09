@@ -130,7 +130,7 @@ pub(crate) async fn apply_config_update(
     for (loaded_name, loaded_info) in loaded_services {
         if let Some(old_info) = snapshot.get(&loaded_name) {
             if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable() {
-                let _ = cleanup_vxlans_chain(&loaded_name, services, orchestrator).await;
+                let _ = cleanup_vxlans_chain(&loaded_name, services, orchestrator, None).await;
             }
 
             if loaded_info.dependencies() != old_info.dependencies() {

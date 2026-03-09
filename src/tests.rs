@@ -523,3 +523,23 @@ async fn node_disconnected_D() {
 
     assert!(matches!(guard["D"], ServiceInfo::Unregistered(_)));
 }
+
+/// Proxy1 (5.5.5.5) disconnects. proxy1→A and proxy1→B chains torn down.
+/// proxy2→A survives, so A→C→D edges survive. All services stay registered.
+#[tokio::test]
+async fn node_disconnected_proxy1() {
+    let server = node_disconnected_setup().await;
+
+    server
+        .orchestrator()
+        .handle_node_disconnect(ip(5, 5, 5, 5), server.services())
+        .await;
+
+    let guard = server.services().read().await;
+    assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_proxy1.dot");
+
+    assert!(matches!(guard["A"], ServiceInfo::Registered(_)));
+    assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
+    assert!(matches!(guard["C"], ServiceInfo::Registered(_)));
+    assert!(matches!(guard["D"], ServiceInfo::Registered(_)));
+}
