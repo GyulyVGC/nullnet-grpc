@@ -32,11 +32,11 @@ message NetMessage {
 
 message VlanSetup {
   MsgId msg_id = 1;
-  string client_ethernet = 2;
-  string client_veth = 3;
-  string server_ethernet = 4;
-  string server_veth = 5;
-  uint32 vlan_id = 6;
+  uint32 vlan_id = 2;
+  string local_veth = 3;
+  string remote_veth = 4;
+  string local_ip = 5;
+  string remote_ip = 6;
   optional HostMapping host_mapping = 7;
 }
 

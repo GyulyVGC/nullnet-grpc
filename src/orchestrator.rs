@@ -89,8 +89,8 @@ impl Orchestrator {
             let id = Uuid::new_v4().to_string();
             self.pending.lock().await.insert(id.clone(), tx);
 
-            let (net_ip, message) = net
-                .setup(id.clone(), dest, remote_server_name, net_id, remote)?;
+            let (net_ip, message) =
+                net.setup(id.clone(), dest, remote_server_name, net_id, remote)?;
 
             if outbound.send(Ok(message)).await.is_err() {
                 self.pending.lock().await.remove(&id);

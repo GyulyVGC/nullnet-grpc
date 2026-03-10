@@ -24,16 +24,16 @@ pub mod net_message {
 pub struct VlanSetup {
     #[prost(message, optional, tag = "1")]
     pub msg_id: ::core::option::Option<MsgId>,
-    #[prost(string, tag = "2")]
-    pub client_ethernet: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub client_veth: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub server_ethernet: ::prost::alloc::string::String,
-    #[prost(string, tag = "5")]
-    pub server_veth: ::prost::alloc::string::String,
-    #[prost(uint32, tag = "6")]
+    #[prost(uint32, tag = "2")]
     pub vlan_id: u32,
+    #[prost(string, tag = "3")]
+    pub local_veth: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub remote_veth: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub local_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub remote_ip: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "7")]
     pub host_mapping: ::core::option::Option<HostMapping>,
 }

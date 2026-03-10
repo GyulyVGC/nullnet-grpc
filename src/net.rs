@@ -1,4 +1,6 @@
-use crate::proto::nullnet_grpc::{HostMapping, MsgId, NetMessage, VxlanSetup, net_message};
+use crate::proto::nullnet_grpc::{
+    HostMapping, MsgId, NetMessage, VlanSetup, VxlanSetup, net_message,
+};
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{ErrorHandler, Location, location};
 use std::net::{IpAddr, Ipv4Addr};
@@ -18,10 +20,52 @@ impl Net {
         remote: IpAddr,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         match self {
-            Net::Vxlan | Net::Vlan => {
-                Self::vxlan_setup(id, dest, remote_server_name, vxlan_id, remote)
-            }
+            Net::Vlan => Self::vlan_setup(id, dest, remote_server_name, vxlan_id, remote),
+            Net::Vxlan => Self::vxlan_setup(id, dest, remote_server_name, vxlan_id, remote),
         }
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn vlan_setup(
+        id: String,
+        dest: IpAddr,
+        remote_server_name: Option<String>,
+        vlan_id: u32,
+        remote: IpAddr,
+    ) -> Option<(Ipv4Addr, NetMessage)> {
+        let [_, _, a, b] = vlan_id.to_be_bytes();
+
+        let (local_veth, remote_veth) = if remote_server_name.is_some() {
+            // this is for client
+            let remote_veth = Ipv4Addr::new(10, a, b, 1);
+            let local_veth = Ipv4Addr::new(10, a, b, 2);
+            (local_veth, remote_veth)
+        } else {
+            // this is for server
+            let local_veth = Ipv4Addr::new(10, a, b, 1);
+            let remote_veth = Ipv4Addr::new(10, a, b, 2);
+            (local_veth, remote_veth)
+        };
+
+        let host_mapping = remote_server_name.map(|name| HostMapping {
+            ip: remote_veth.to_string(),
+            name,
+        });
+
+        Some((
+            remote_veth,
+            NetMessage {
+                message: Some(net_message::Message::VlanSetup(VlanSetup {
+                    msg_id: Some(MsgId { id }),
+                    vlan_id,
+                    local_veth: local_veth.to_string(),
+                    remote_veth: remote_veth.to_string(),
+                    local_ip: dest.to_string(),
+                    remote_ip: remote.to_string(),
+                    host_mapping,
+                })),
+            },
+        ))
     }
 
     fn vxlan_setup(
@@ -53,11 +97,9 @@ impl Net {
             (ns_net_server, br_net_server)
         };
 
-        let host_mapping = remote_server_name.map(|name| {
-            HostMapping {
-                ip: br_net.ip().to_string(),
-                name,
-            }
+        let host_mapping = remote_server_name.map(|name| HostMapping {
+            ip: br_net.ip().to_string(),
+            name,
         });
 
         Some((
