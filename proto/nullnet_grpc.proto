@@ -6,7 +6,7 @@ service NullnetGrpc {
   // TAP-based clients APIs --------------------------------------------------------------------------------------------
 
   // Control channel
-  rpc ControlChannel(stream MsgId) returns (stream VxlanMessage);
+  rpc ControlChannel(stream MsgId) returns (stream NetMessage);
 
   // Services list
   rpc ServicesList(Services) returns (Empty);
@@ -19,11 +19,30 @@ service NullnetGrpc {
 
 // TAP-based clients ---------------------------------------------------------------------------------------------------
 
-message VxlanMessage {
+message NetMessage {
   oneof message {
-    VxlanSetup vxlan_setup = 1;
-    VxlanTeardown vxlan_teardown = 2;
+    // VLAN setup and teardown
+    VlanSetup vlan_setup = 1;
+    VlanTeardown vlan_teardown = 2;
+    // VXLAN setup and teardown
+    VxlanSetup vxlan_setup = 3;
+    VxlanTeardown vxlan_teardown = 4;
   }
+}
+
+message VlanSetup {
+  MsgId msg_id = 1;
+  string client_ethernet = 2;
+  string client_veth = 3;
+  string server_ethernet = 4;
+  string server_veth = 5;
+  uint32 vlan_id = 6;
+  optional HostMapping host_mapping = 7;
+}
+
+message VlanTeardown {
+  string client_veth = 1;
+  string server_veth = 2;
 }
 
 message VxlanSetup {

@@ -13,7 +13,7 @@ impl Clients {
     }
 
     pub(super) fn is_client_setup(&self, client: &Client) -> Option<Ipv4Addr> {
-        self.clients.get(client).map(|ci| ci.server_br)
+        self.clients.get(client).map(|ci| ci.server_net)
     }
 
     pub(super) fn clients(&self) -> &HashMap<Client, ClientInfo> {
@@ -55,8 +55,8 @@ impl Client {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ClientInfo {
-    client_br: Ipv4Addr,
-    server_br: Ipv4Addr,
+    client_net: Ipv4Addr,
+    server_net: Ipv4Addr,
     vxlan_id: u32,
     time_ms: u128,
     active_chains: usize,
@@ -64,14 +64,14 @@ pub(crate) struct ClientInfo {
 
 impl ClientInfo {
     pub(crate) fn new(
-        client_br: Ipv4Addr,
-        server_br: Ipv4Addr,
+        client_net: Ipv4Addr,
+        server_net: Ipv4Addr,
         vxlan_id: u32,
         time_ms: u128,
     ) -> Self {
         Self {
-            client_br,
-            server_br,
+            client_net,
+            server_net,
             vxlan_id,
             time_ms,
             active_chains: 0,
@@ -80,20 +80,20 @@ impl ClientInfo {
 
     pub(crate) fn placeholder() -> Self {
         Self {
-            client_br: Ipv4Addr::UNSPECIFIED,
-            server_br: Ipv4Addr::UNSPECIFIED,
+            client_net: Ipv4Addr::UNSPECIFIED,
+            server_net: Ipv4Addr::UNSPECIFIED,
             vxlan_id: 0,
             time_ms: 0,
             active_chains: 0,
         }
     }
 
-    pub(crate) fn client_br(&self) -> Ipv4Addr {
-        self.client_br
+    pub(crate) fn client_net(&self) -> Ipv4Addr {
+        self.client_net
     }
 
-    pub(crate) fn server_br(&self) -> Ipv4Addr {
-        self.server_br
+    pub(crate) fn server_net(&self) -> Ipv4Addr {
+        self.server_net
     }
 
     pub(crate) fn vxlan_id(&self) -> u32 {

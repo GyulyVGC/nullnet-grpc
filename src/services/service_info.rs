@@ -159,7 +159,7 @@ impl RegisteredServiceInfo {
             self.clients_mut().remove(client);
 
             for dest in [self.ip, client_ip] {
-                let _ = orchestrator.send_vxlan_teardown(dest, vxlan_id).await;
+                let _ = orchestrator.send_net_teardown(dest, vxlan_id).await;
             }
         }
     }

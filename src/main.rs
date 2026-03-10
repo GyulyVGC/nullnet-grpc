@@ -1,4 +1,5 @@
 mod graphviz;
+mod net;
 mod nullnet_grpc_impl;
 mod orchestrator;
 mod proto;

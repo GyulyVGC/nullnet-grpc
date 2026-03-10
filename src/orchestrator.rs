@@ -1,19 +1,17 @@
-use crate::proto::nullnet_grpc::{
-    HostMapping, MsgId, VxlanMessage, VxlanSetup, VxlanTeardown, vxlan_message,
-};
+use crate::net::Net;
+use crate::proto::nullnet_grpc::{MsgId, NetMessage, VxlanTeardown, net_message};
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::service_info::ServiceInfo;
-use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
 
-type OutboundStream = mpsc::Sender<Result<VxlanMessage, Status>>;
+type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
 
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
@@ -77,70 +75,51 @@ impl Orchestrator {
         apply_changes(changes, &mut services_guard, None, self).await;
     }
 
-    pub(crate) async fn send_vxlan_setup(
+    pub(crate) async fn send_net_setup(
         &self,
+        net: Net,
         dest: IpAddr,
-        vxlan_id: u32,
-        ns_net: Ipv4Network,
-        br_net: Ipv4Network,
+        remote_server_name: Option<String>,
+        net_id: u32,
         remote: IpAddr,
-        host_mapping: Option<HostMapping>,
-    ) -> Result<(), Error> {
+    ) -> Option<Ipv4Addr> {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
             let (tx, rx) = oneshot::channel();
             let id = Uuid::new_v4().to_string();
             self.pending.lock().await.insert(id.clone(), tx);
 
-            let message = vxlan_message::Message::VxlanSetup(VxlanSetup {
-                msg_id: Some(MsgId { id: id.clone() }),
-                vxlan_id,
-                ns_name: format!("ns_{vxlan_id}"),
-                ns_net: ns_net.to_string(),
-                br_name: format!("br_{vxlan_id}"),
-                br_net: br_net.to_string(),
-                local_ip: dest.to_string(),
-                remote_ip: remote.to_string(),
-                host_mapping,
-            });
+            let (net_ip, message) = net
+                .setup(id.clone(), dest, remote_server_name, net_id, remote)?;
 
-            if let Err(e) = outbound
-                .send(Ok(VxlanMessage {
-                    message: Some(message),
-                }))
-                .await
-            {
+            if outbound.send(Ok(message)).await.is_err() {
                 self.pending.lock().await.remove(&id);
-                return Err(e.to_string()).handle_err(location!());
+                return None;
             }
 
             if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
-                result.handle_err(location!())
+                result.ok().map(|()| net_ip)
             } else {
                 self.pending.lock().await.remove(&id);
-                Err(format!("VXLAN setup ack timed out for {dest}")).handle_err(location!())
+                None
             }
         } else {
-            Err(format!("Client with IP {dest} not found")).handle_err(location!())
+            None
         }
     }
 
-    pub(crate) async fn send_vxlan_teardown(
-        &self,
-        dest: IpAddr,
-        vxlan_id: u32,
-    ) -> Result<(), Error> {
+    pub(crate) async fn send_net_teardown(&self, dest: IpAddr, vxlan_id: u32) -> Result<(), Error> {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
             println!("Sending VXLAN {vxlan_id} teardown to client {dest}");
 
-            let message = vxlan_message::Message::VxlanTeardown(VxlanTeardown {
+            let message = net_message::Message::VxlanTeardown(VxlanTeardown {
                 ns_name: format!("ns_{vxlan_id}"),
                 br_name: format!("br_{vxlan_id}"),
             });
 
             outbound
-                .send(Ok(VxlanMessage {
+                .send(Ok(NetMessage {
                     message: Some(message),
                 }))
                 .await
@@ -155,16 +134,16 @@ impl Orchestrator {
 #[cfg(test)]
 impl Orchestrator {
     pub(crate) async fn register_fake_client(&self, ip: IpAddr) {
-        use crate::proto::nullnet_grpc::vxlan_message;
+        use crate::proto::nullnet_grpc::net_message;
 
-        let (tx, mut rx) = mpsc::channel::<Result<VxlanMessage, Status>>(64);
+        let (tx, mut rx) = mpsc::channel::<Result<NetMessage, Status>>(64);
         self.clients.write().await.insert(ip, tx);
 
         let pending = self.pending.clone();
         tokio::spawn(async move {
             while let Some(Ok(msg)) = rx.recv().await {
                 // auto-ack VxlanSetup messages
-                if let Some(vxlan_message::Message::VxlanSetup(setup)) = msg.message {
+                if let Some(net_message::Message::VxlanSetup(setup)) = msg.message {
                     if let Some(msg_id) = setup.msg_id {
                         if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
                             let _ = tx.send(());

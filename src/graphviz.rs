@@ -65,8 +65,8 @@ impl ServiceInfo {
 
 impl ClientInfo {
     fn graphviz_edge_label(&self, show_ends: bool) -> String {
-        let client_br = self.client_br();
-        let server_br = self.server_br();
+        let client_br = self.client_net();
+        let server_br = self.server_net();
         let vxlan_id = self.vxlan_id();
         let time_ms = self.time_ms();
         if show_ends {

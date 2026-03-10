@@ -1,7 +1,7 @@
 mod proto;
 
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
-use crate::nullnet_grpc::{MsgId, ProxyRequest, Services, Upstream, VxlanMessage};
+use crate::nullnet_grpc::{MsgId, ProxyRequest, Services, Upstream, NetMessage};
 pub use proto::*;
 use tokio::sync::mpsc;
 use tonic::Request;
@@ -48,7 +48,7 @@ impl NullnetGrpcInterface {
     pub async fn control_channel(
         &self,
         receiver: mpsc::Receiver<MsgId>,
-    ) -> Result<Streaming<VxlanMessage>, String> {
+    ) -> Result<Streaming<NetMessage>, String> {
         let receiver = ReceiverStream::new(receiver);
 
         Ok(self

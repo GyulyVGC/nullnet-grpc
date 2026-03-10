@@ -1,14 +1,12 @@
 use crate::graphviz::generate_graphviz;
+use crate::net::Net;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
-use crate::proto::nullnet_grpc::{
-    Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VxlanMessage,
-};
+use crate::proto::nullnet_grpc::{Empty, MsgId, NetMessage, ProxyRequest, Services, Upstream};
 use crate::services::changes::{apply_changes, detect_services_list_changes};
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
-use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -22,7 +20,7 @@ pub(crate) struct NullnetGrpcImpl {
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
     /// Last registered VXLAN ID
-    last_registered_vxlan: Arc<Mutex<u32>>,
+    last_registered_net: Arc<Mutex<u32>>,
     /// Orchestrator to manage TAP-based clients and VXLAN setups
     orchestrator: Orchestrator,
 }
@@ -50,7 +48,7 @@ impl NullnetGrpcImpl {
 
         Ok(NullnetGrpcImpl {
             services,
-            last_registered_vxlan: Arc::new(Mutex::new(100)),
+            last_registered_net: Arc::new(Mutex::new(100)),
             orchestrator,
         })
     }
@@ -222,7 +220,7 @@ impl NullnetGrpcImpl {
         for ((client_ethernet, client), (server_ethernet, server)) in dep_chain {
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
-            let last_registered_vxlan = self.last_registered_vxlan.clone();
+            let last_registered_net = self.last_registered_net.clone();
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
@@ -241,70 +239,35 @@ impl NullnetGrpcImpl {
                 drop(services_guard);
 
                 // TODO: check for VXLAN ID overflow (max 65535) and reclaim freed IDs
-                let mut last_id = last_registered_vxlan.lock().await;
+                let mut last_id = last_registered_net.lock().await;
                 *last_id += 1;
-                let vxlan_id = *last_id;
+                let net_id = *last_id;
                 drop(last_id);
 
-                let [_, _, a, b] = vxlan_id.to_be_bytes();
-                let ns_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 1), 24)
-                    .handle_err(location!())
-                    .ok()?;
-                let br_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 2), 24)
-                    .handle_err(location!())
-                    .ok()?;
-                let ns_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, 3), 24)
-                    .handle_err(location!())
-                    .ok()?;
-                let br_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, 4), 24)
-                    .handle_err(location!())
-                    .ok()?;
-
-                let br_ip_server = br_net_server.ip();
-                let br_ip_client = br_net_client.ip();
-
-                let host_mapping = Some(HostMapping {
-                    ip: br_ip_server.to_string(),
-                    name: server.name().to_string(),
-                });
-
-                let upstream_ip = if client.is_proxy().is_some() {
-                    Some(br_ip_server)
-                } else {
-                    None
-                };
-
                 let orch = orchestrator.clone();
-                let server_res = orch.send_vxlan_setup(
-                    server_ethernet,
-                    vxlan_id,
-                    ns_net_server,
-                    br_net_server,
-                    client_ethernet,
-                    None,
-                );
+                let server_res =
+                    orch.send_net_setup(Net::Vxlan, server_ethernet, None, net_id, client_ethernet);
                 let orch2 = orchestrator.clone();
-                let client_res = orch2.send_vxlan_setup(
+                let client_res = orch2.send_net_setup(
+                    Net::Vxlan,
                     client_ethernet,
-                    vxlan_id,
-                    ns_net_client,
-                    br_net_client,
+                    Some(server.name().to_string()),
+                    net_id,
                     server_ethernet,
-                    host_mapping,
                 );
 
                 let (server_ok, client_ok) = tokio::join!(server_res, client_res);
 
-                if server_ok.is_err() || client_ok.is_err() {
+                if server_ok.is_none() || client_ok.is_none() {
                     // rollback: teardown whichever side succeeded
-                    if server_ok.is_ok() {
+                    if server_ok.is_some() {
                         let _ = orchestrator
-                            .send_vxlan_teardown(server_ethernet, vxlan_id)
+                            .send_net_teardown(server_ethernet, net_id)
                             .await;
                     }
-                    if client_ok.is_ok() {
+                    if client_ok.is_some() {
                         let _ = orchestrator
-                            .send_vxlan_teardown(client_ethernet, vxlan_id)
+                            .send_net_teardown(client_ethernet, net_id)
                             .await;
                     }
                     // remove placeholder
@@ -316,6 +279,9 @@ impl NullnetGrpcImpl {
                     return None;
                 }
 
+                let net_ip_server = server_ok?;
+                let net_ip_client = client_ok?;
+
                 println!("{server_ethernet} acknowledged");
                 println!("{client_ethernet} acknowledged");
 
@@ -323,21 +289,25 @@ impl NullnetGrpcImpl {
                 let mut guard = services.write().await;
                 if let Some(ServiceInfo::Registered(reg)) = guard.get_mut(server.name()) {
                     let time_ms = init_time.elapsed().as_millis();
-                    let ci = ClientInfo::new(br_ip_client, br_ip_server, vxlan_id, time_ms);
+                    let ci = ClientInfo::new(net_ip_client, net_ip_server, net_id, time_ms);
                     reg.add_client(client.clone(), ci);
                     reg.add_chain(&client);
                 } else {
                     // service was unregistered during setup — teardown VXLANs
                     drop(guard);
                     let _ = orchestrator
-                        .send_vxlan_teardown(server_ethernet, vxlan_id)
+                        .send_net_teardown(server_ethernet, net_id)
                         .await;
                     let _ = orchestrator
-                        .send_vxlan_teardown(client_ethernet, vxlan_id)
+                        .send_net_teardown(client_ethernet, net_id)
                         .await;
                 }
 
-                upstream_ip
+                if client.is_proxy().is_some() {
+                    Some(net_ip_server)
+                } else {
+                    None
+                }
             });
         }
 
@@ -359,7 +329,7 @@ impl NullnetGrpcImpl {
     pub(crate) fn new_for_test(services: HashMap<String, ServiceInfo>) -> Self {
         NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services)),
-            last_registered_vxlan: Arc::new(Mutex::new(100)),
+            last_registered_net: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
         }
     }
@@ -375,7 +345,7 @@ impl NullnetGrpcImpl {
 
 #[tonic::async_trait]
 impl NullnetGrpc for NullnetGrpcImpl {
-    type ControlChannelStream = ReceiverStream<Result<VxlanMessage, Status>>;
+    type ControlChannelStream = ReceiverStream<Result<NetMessage, Status>>;
 
     async fn control_channel(
         &self,

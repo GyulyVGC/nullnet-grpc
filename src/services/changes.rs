@@ -177,7 +177,7 @@ async fn teardown_chain(
 
         for (_, vxlan_id, proxy_ip) in &proxy_teardowns {
             for dest in [service_ip, *proxy_ip] {
-                let _ = orchestrator.send_vxlan_teardown(dest, *vxlan_id).await;
+                let _ = orchestrator.send_net_teardown(dest, *vxlan_id).await;
             }
         }
 
