@@ -38,6 +38,8 @@ impl NullnetGrpcImpl {
             _ => Net::default(),
         };
 
+        println!("Using network type: {net_type:?}");
+
         let services = Arc::new(RwLock::new(ServicesToml::load().await?));
 
         // regenerate the service graphviz periodically for debugging
