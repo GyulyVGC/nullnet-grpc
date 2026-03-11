@@ -22,9 +22,9 @@ pub(crate) struct NullnetGrpcImpl {
     net_type: Net,
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
-    /// Last registered VXLAN ID
+    /// Last registered NET ID
     last_registered_net: Arc<Mutex<u32>>,
-    /// Orchestrator to manage TAP-based clients and VXLAN setups
+    /// Orchestrator to manage TAP-based clients and NET setups
     orchestrator: Orchestrator,
 }
 
@@ -43,7 +43,7 @@ impl NullnetGrpcImpl {
         // regenerate the service graphviz periodically for debugging
         let services_2 = services.clone();
         tokio::spawn(async move {
-            generate_graphviz(services_2).await;
+            generate_graphviz(services_2, net_type).await;
         });
 
         let orchestrator = Orchestrator::new();
@@ -201,7 +201,7 @@ impl NullnetGrpcImpl {
             (service_ip, Client::new(service_name.to_string(), None)),
         ));
 
-        self.vxlan_chain_setup(dep_chain).await
+        self.net_chain_setup(dep_chain).await
     }
 
     pub(crate) async fn apply_services_list(
@@ -224,7 +224,7 @@ impl NullnetGrpcImpl {
         Ok(())
     }
 
-    pub(crate) async fn vxlan_chain_setup(
+    pub(crate) async fn net_chain_setup(
         &self,
         dep_chain: Vec<((IpAddr, Client), (IpAddr, Client))>,
     ) -> Result<Ipv4Addr, Error> {
@@ -233,6 +233,7 @@ impl NullnetGrpcImpl {
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
             let last_registered_net = self.last_registered_net.clone();
+            let net_type = self.net_type;
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
@@ -250,7 +251,7 @@ impl NullnetGrpcImpl {
                 reg.add_client(client.clone(), ClientInfo::placeholder());
                 drop(services_guard);
 
-                // TODO: check for VXLAN ID overflow (max 65535) and reclaim freed IDs
+                // TODO: check for NET ID overflow (max 65535) and reclaim freed IDs
                 let mut last_id = last_registered_net.lock().await;
                 *last_id += 1;
                 let net_id = *last_id;
@@ -258,10 +259,10 @@ impl NullnetGrpcImpl {
 
                 let orch = orchestrator.clone();
                 let server_res =
-                    orch.send_net_setup(Net::Vxlan, server_ethernet, None, net_id, client_ethernet);
+                    orch.send_net_setup(net_type, server_ethernet, None, net_id, client_ethernet);
                 let orch2 = orchestrator.clone();
                 let client_res = orch2.send_net_setup(
-                    Net::Vxlan,
+                    net_type,
                     client_ethernet,
                     Some(server.name().to_string()),
                     net_id,
@@ -305,7 +306,7 @@ impl NullnetGrpcImpl {
                     reg.add_client(client.clone(), ci);
                     reg.add_chain(&client);
                 } else {
-                    // service was unregistered during setup — teardown VXLANs
+                    // service was unregistered during setup — teardown NETs
                     drop(guard);
                     let _ = orchestrator
                         .send_net_teardown(server_ethernet, net_id)
@@ -331,7 +332,7 @@ impl NullnetGrpcImpl {
         }
 
         ret_val
-            .ok_or("No valid upstream IP found after VXLAN chain setup")
+            .ok_or("No valid upstream IP found after NET chain setup")
             .handle_err(location!())
     }
 }

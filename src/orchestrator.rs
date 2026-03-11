@@ -107,14 +107,15 @@ impl Orchestrator {
         }
     }
 
-    pub(crate) async fn send_net_teardown(&self, dest: IpAddr, vxlan_id: u32) -> Result<(), Error> {
+    // TODO: supporto generic NET
+    pub(crate) async fn send_net_teardown(&self, dest: IpAddr, net_id: u32) -> Result<(), Error> {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
-            println!("Sending VXLAN {vxlan_id} teardown to client {dest}");
+            println!("Sending network {net_id} teardown to client {dest}");
 
             let message = net_message::Message::VxlanTeardown(VxlanTeardown {
-                ns_name: format!("ns_{vxlan_id}"),
-                br_name: format!("br_{vxlan_id}"),
+                ns_name: format!("ns_{net_id}"),
+                br_name: format!("br_{net_id}"),
             });
 
             outbound
@@ -141,8 +142,8 @@ impl Orchestrator {
         let pending = self.pending.clone();
         tokio::spawn(async move {
             while let Some(Ok(msg)) = rx.recv().await {
-                // auto-ack VxlanSetup messages
-                if let Some(net_message::Message::VxlanSetup(setup)) = msg.message {
+                // auto-ack NetSetup messages
+                if let Some(net_message::Message::VlanSetup(setup)) = msg.message {
                     if let Some(msg_id) = setup.msg_id {
                         if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
                             let _ = tx.send(());

@@ -11,7 +11,7 @@ fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(a, b, c, d))
 }
 
-/// Strip non-deterministic parts (VXLAN IDs, timing) from graphviz edge labels
+/// Strip non-deterministic parts (NET IDs, timing) from graphviz edge labels
 /// so that structural comparison is possible.
 fn normalize_graphviz(graphviz: &str) -> String {
     graphviz

@@ -11,12 +11,12 @@ impl Net {
         id: String,
         dest: IpAddr,
         remote_server_name: Option<String>,
-        vxlan_id: u32,
+        net_id: u32,
         remote: IpAddr,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         match self {
-            Net::Vlan => Self::vlan_setup(id, dest, remote_server_name, vxlan_id, remote),
-            Net::Vxlan => Self::vxlan_setup(id, dest, remote_server_name, vxlan_id, remote),
+            Net::Vlan => Self::vlan_setup(id, dest, remote_server_name, net_id, remote),
+            Net::Vxlan => Self::vxlan_setup(id, dest, remote_server_name, net_id, remote),
         }
     }
 

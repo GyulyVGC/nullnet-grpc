@@ -57,7 +57,7 @@ impl Client {
 pub(crate) struct ClientInfo {
     client_net: Ipv4Addr,
     server_net: Ipv4Addr,
-    vxlan_id: u32,
+    net_id: u32,
     time_ms: u128,
     active_chains: usize,
 }
@@ -66,13 +66,13 @@ impl ClientInfo {
     pub(crate) fn new(
         client_net: Ipv4Addr,
         server_net: Ipv4Addr,
-        vxlan_id: u32,
+        net_id: u32,
         time_ms: u128,
     ) -> Self {
         Self {
             client_net,
             server_net,
-            vxlan_id,
+            net_id,
             time_ms,
             active_chains: 0,
         }
@@ -82,7 +82,7 @@ impl ClientInfo {
         Self {
             client_net: Ipv4Addr::UNSPECIFIED,
             server_net: Ipv4Addr::UNSPECIFIED,
-            vxlan_id: 0,
+            net_id: 0,
             time_ms: 0,
             active_chains: 0,
         }
@@ -96,8 +96,8 @@ impl ClientInfo {
         self.server_net
     }
 
-    pub(crate) fn vxlan_id(&self) -> u32 {
-        self.vxlan_id
+    pub(crate) fn net_id(&self) -> u32 {
+        self.net_id
     }
 
     pub(crate) fn time_ms(&self) -> u128 {

@@ -96,7 +96,7 @@ pub(crate) fn detect_node_disconnect_changes(
     changes
 }
 
-// --- Teardown helpers (moved from vxlan.rs) ---
+// --- Teardown helpers ---
 
 async fn teardown_invalidated_service(
     invalidated_service: &str,
@@ -168,16 +168,16 @@ async fn teardown_chain(
             .filter_map(|(c, ci)| {
                 let pip = c.is_proxy()?;
                 if proxy_filter.is_none() || proxy_filter == Some(pip) {
-                    Some((c.clone(), ci.vxlan_id(), pip))
+                    Some((c.clone(), ci.net_id(), pip))
                 } else {
                     None
                 }
             })
             .collect();
 
-        for (_, vxlan_id, proxy_ip) in &proxy_teardowns {
+        for (_, net_id, proxy_ip) in &proxy_teardowns {
             for dest in [service_ip, *proxy_ip] {
-                let _ = orchestrator.send_net_teardown(dest, *vxlan_id).await;
+                let _ = orchestrator.send_net_teardown(dest, *net_id).await;
             }
         }
 

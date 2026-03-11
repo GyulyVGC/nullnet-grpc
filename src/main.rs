@@ -54,4 +54,4 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
     NullnetGrpcImpl::new().await
 }
 
-// TODO: reuse VXLAN IDs of unregistered services
+// TODO: reuse NET IDs of unregistered services

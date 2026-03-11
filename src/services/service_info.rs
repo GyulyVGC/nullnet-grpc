@@ -143,11 +143,10 @@ impl RegisteredServiceInfo {
         num_chains: usize,
         orchestrator: &Orchestrator,
     ) {
-        let vxlan_to_remove = if let Some(client_info) = self.clients.clients_mut().get_mut(client)
-        {
+        let net_to_remove = if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
             client_info.remove_active_chains(num_chains);
             if client_info.active_chains() == 0 {
-                Some(client_info.vxlan_id())
+                Some(client_info.net_id())
             } else {
                 None
             }
@@ -155,11 +154,11 @@ impl RegisteredServiceInfo {
             None
         };
 
-        if let Some(vxlan_id) = vxlan_to_remove {
+        if let Some(net_id) = net_to_remove {
             self.clients_mut().remove(client);
 
             for dest in [self.ip, client_ip] {
-                let _ = orchestrator.send_net_teardown(dest, vxlan_id).await;
+                let _ = orchestrator.send_net_teardown(dest, net_id).await;
             }
         }
     }
