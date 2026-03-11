@@ -90,7 +90,7 @@ impl Orchestrator {
             let id = Uuid::new_v4().to_string();
             self.pending.lock().await.insert(id.clone(), tx);
 
-            let (net_ip, message) =
+            let (server_net, message) =
                 net.setup(id.clone(), dest, remote_server_name, net_id, remote)?;
 
             if outbound.send(Ok(message)).await.is_err() {
@@ -99,7 +99,7 @@ impl Orchestrator {
             }
 
             if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
-                result.ok().map(|()| net_ip)
+                result.ok().map(|()| server_net)
             } else {
                 self.pending.lock().await.remove(&id);
                 None

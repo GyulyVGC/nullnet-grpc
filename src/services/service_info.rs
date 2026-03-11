@@ -173,10 +173,12 @@ impl RegisteredServiceInfo {
     }
 
     pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
-        self.clients.is_client_setup(client).map(|net_ip| Upstream {
-            ip: net_ip.to_string(),
-            port: u32::from(self.port),
-        })
+        self.clients
+            .is_client_setup(client)
+            .map(|server_net| Upstream {
+                ip: server_net.to_string(),
+                port: u32::from(self.port),
+            })
     }
 
     pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
