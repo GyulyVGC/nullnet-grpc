@@ -4,6 +4,8 @@ digraph G {
 	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
 
 	"color.com" [style=solid, color=green];
+	"192.168.1.101 (via 192.168.1.130)" -> "color.com" [label="VLAN 101 [21ms]"];
 
 	"fs.color.com" [style=solid, color=green];
+	"color.com" -> "fs.color.com" [label="VLAN 102 [20ms]"];
 }

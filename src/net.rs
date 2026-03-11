@@ -47,7 +47,7 @@ impl Net {
         });
 
         Some((
-            remote_veth,
+            server_veth,
             NetMessage {
                 message: Some(net_message::Message::VlanSetup(VlanSetup {
                     msg_id: Some(MsgId { id }),

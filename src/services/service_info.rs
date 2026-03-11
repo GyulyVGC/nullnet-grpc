@@ -172,8 +172,8 @@ impl RegisteredServiceInfo {
     }
 
     pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
-        self.clients.is_client_setup(client).map(|br_ip| Upstream {
-            ip: br_ip.to_string(),
+        self.clients.is_client_setup(client).map(|net_ip| Upstream {
+            ip: net_ip.to_string(),
             port: u32::from(self.port),
         })
     }
