@@ -159,7 +159,7 @@ impl RegisteredServiceInfo {
             self.clients_mut().remove(client);
 
             for dest in [self.ip, client_ip] {
-                let _ = orchestrator.send_net_teardown(net, dest, net_id).await;
+                orchestrator.send_net_teardown(net, dest, net_id).await;
             }
         }
     }

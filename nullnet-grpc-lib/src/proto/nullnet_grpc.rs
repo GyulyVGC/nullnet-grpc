@@ -44,7 +44,9 @@ pub struct VlanSetup {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VlanTeardown {
-    #[prost(string, tag = "1")]
+    #[prost(uint32, tag = "1")]
+    pub vlan_id: u32,
+    #[prost(string, tag = "2")]
     pub veth_name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

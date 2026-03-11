@@ -282,12 +282,12 @@ impl NullnetGrpcImpl {
                 if server_ok.is_none() || client_ok.is_none() {
                     // rollback: teardown whichever side succeeded
                     if server_ok.is_some() {
-                        let _ = orchestrator
+                        let () = orchestrator
                             .send_net_teardown(net_type, server_ethernet, net_id)
                             .await;
                     }
                     if client_ok.is_some() {
-                        let _ = orchestrator
+                        orchestrator
                             .send_net_teardown(net_type, client_ethernet, net_id)
                             .await;
                     }
@@ -316,10 +316,10 @@ impl NullnetGrpcImpl {
                 } else {
                     // service was unregistered during setup — teardown NETs
                     drop(guard);
-                    let _ = orchestrator
+                    orchestrator
                         .send_net_teardown(net_type, server_ethernet, net_id)
                         .await;
-                    let _ = orchestrator
+                    orchestrator
                         .send_net_teardown(net_type, client_ethernet, net_id)
                         .await;
                 }

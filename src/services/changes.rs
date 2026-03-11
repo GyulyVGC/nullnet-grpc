@@ -180,7 +180,7 @@ async fn teardown_chain(
 
         for (_, net_id, proxy_ip) in &proxy_teardowns {
             for dest in [service_ip, *proxy_ip] {
-                let _ = orchestrator.send_net_teardown(net, dest, *net_id).await;
+                orchestrator.send_net_teardown(net, dest, *net_id).await;
             }
         }
 

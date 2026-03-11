@@ -25,7 +25,8 @@ impl Net {
         match self {
             Net::Vlan => NetMessage {
                 message: Some(net_message::Message::VlanTeardown(VlanTeardown {
-                    veth_name: format!("veth_{}", net_id),
+                    vlan_id: net_id,
+                    veth_name: format!("veth_{net_id}"),
                 })),
             },
             Net::Vxlan => NetMessage {
