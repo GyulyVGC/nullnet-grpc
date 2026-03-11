@@ -1,5 +1,6 @@
 use crate::proto::nullnet_grpc::{
-    HostMapping, MsgId, Net, NetMessage, VlanSetup, VxlanSetup, net_message,
+    HostMapping, MsgId, Net, NetMessage, VlanSetup, VlanTeardown, VxlanSetup, VxlanTeardown,
+    net_message,
 };
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{ErrorHandler, Location, location};
@@ -17,6 +18,22 @@ impl Net {
         match self {
             Net::Vlan => Self::vlan_setup(id, dest, remote_server_name, net_id, remote),
             Net::Vxlan => Self::vxlan_setup(id, dest, remote_server_name, net_id, remote),
+        }
+    }
+
+    pub(crate) fn teardown(self, net_id: u32) -> NetMessage {
+        match self {
+            Net::Vlan => NetMessage {
+                message: Some(net_message::Message::VlanTeardown(VlanTeardown {
+                    veth_name: format!("veth_{}", net_id),
+                })),
+            },
+            Net::Vxlan => NetMessage {
+                message: Some(net_message::Message::VxlanTeardown(VxlanTeardown {
+                    ns_name: format!("ns_{net_id}"),
+                    br_name: format!("br_{net_id}"),
+                })),
+            },
         }
     }
 

@@ -53,8 +53,7 @@ message VlanSetup {
 }
 
 message VlanTeardown {
-  string client_veth = 1;
-  string server_veth = 2;
+  string veth_name = 1;
 }
 
 message VxlanSetup {

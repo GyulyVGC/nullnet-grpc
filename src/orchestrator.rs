@@ -1,4 +1,4 @@
-use crate::proto::nullnet_grpc::{MsgId, Net, NetMessage, VxlanTeardown, net_message};
+use crate::proto::nullnet_grpc::{MsgId, Net, NetMessage};
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -28,6 +28,7 @@ impl Orchestrator {
 
     pub(crate) async fn add_client(
         &self,
+        net: Net,
         request: Request<Streaming<MsgId>>,
         outbound: OutboundStream,
         services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
@@ -51,7 +52,7 @@ impl Orchestrator {
 
             println!("Control channel from '{client_ip}' closed");
             orchestrator
-                .handle_node_disconnect(client_ip, &services)
+                .handle_node_disconnect(net, client_ip, &services)
                 .await;
         });
 
@@ -64,6 +65,7 @@ impl Orchestrator {
 
     pub(crate) async fn handle_node_disconnect(
         &self,
+        net: Net,
         client_ip: IpAddr,
         services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
     ) {
@@ -71,7 +73,7 @@ impl Orchestrator {
 
         let mut services_guard = services.write().await;
         let changes = detect_node_disconnect_changes(&services_guard, client_ip);
-        apply_changes(changes, &mut services_guard, None, self).await;
+        apply_changes(net, changes, &mut services_guard, None, self).await;
     }
 
     pub(crate) async fn send_net_setup(
@@ -107,26 +109,15 @@ impl Orchestrator {
         }
     }
 
-    // TODO: supporto generic NET
-    pub(crate) async fn send_net_teardown(&self, dest: IpAddr, net_id: u32) -> Result<(), Error> {
+    // TODO: support generic NET
+    pub(crate) async fn send_net_teardown(&self, net: Net, dest: IpAddr, net_id: u32) {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
             println!("Sending network {net_id} teardown to client {dest}");
 
-            let message = net_message::Message::VxlanTeardown(VxlanTeardown {
-                ns_name: format!("ns_{net_id}"),
-                br_name: format!("br_{net_id}"),
-            });
+            let message = net.teardown(net_id);
 
-            outbound
-                .send(Ok(NetMessage {
-                    message: Some(message),
-                }))
-                .await
-                .handle_err(location!())?;
-            Ok(())
-        } else {
-            Err(format!("Client with IP {dest} not found")).handle_err(location!())
+            let _ = outbound.send(Ok(message)).await.handle_err(location!());
         }
     }
 }

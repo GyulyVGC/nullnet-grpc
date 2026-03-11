@@ -51,8 +51,9 @@ impl NullnetGrpcImpl {
 
         // keep services up to date with the services.toml file
         let services_2 = services.clone();
+        let net = net_type;
         tokio::spawn(async move {
-            ServicesToml::watch(&services_2, orchestrator_2.clone())
+            ServicesToml::watch(net, &services_2, orchestrator_2.clone())
                 .await
                 .expect("failed to watch services.toml for changes");
         });
@@ -72,7 +73,7 @@ impl NullnetGrpcImpl {
         let (outbound, receiver) = mpsc::channel(64);
 
         self.orchestrator
-            .add_client(request, outbound, self.services.clone())
+            .add_client(self.net_type, request, outbound, self.services.clone())
             .await?;
 
         Ok(Response::new(ReceiverStream::new(receiver)))
@@ -212,7 +213,14 @@ impl NullnetGrpcImpl {
         let mut services_mut = self.services.write().await;
 
         let changes = detect_services_list_changes(&services_mut, sender_ip, service_list);
-        apply_changes(changes, &mut services_mut, None, &self.orchestrator).await;
+        apply_changes(
+            self.net_type,
+            changes,
+            &mut services_mut,
+            None,
+            &self.orchestrator,
+        )
+        .await;
 
         // re-register services that are still present
         for (name, port) in service_list {
@@ -275,12 +283,12 @@ impl NullnetGrpcImpl {
                     // rollback: teardown whichever side succeeded
                     if server_ok.is_some() {
                         let _ = orchestrator
-                            .send_net_teardown(server_ethernet, net_id)
+                            .send_net_teardown(net_type, server_ethernet, net_id)
                             .await;
                     }
                     if client_ok.is_some() {
                         let _ = orchestrator
-                            .send_net_teardown(client_ethernet, net_id)
+                            .send_net_teardown(net_type, client_ethernet, net_id)
                             .await;
                     }
                     // remove placeholder
@@ -309,10 +317,10 @@ impl NullnetGrpcImpl {
                     // service was unregistered during setup — teardown NETs
                     drop(guard);
                     let _ = orchestrator
-                        .send_net_teardown(server_ethernet, net_id)
+                        .send_net_teardown(net_type, server_ethernet, net_id)
                         .await;
                     let _ = orchestrator
-                        .send_net_teardown(client_ethernet, net_id)
+                        .send_net_teardown(net_type, client_ethernet, net_id)
                         .await;
                 }
 

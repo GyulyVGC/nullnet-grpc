@@ -1,4 +1,5 @@
 use crate::orchestrator::Orchestrator;
+use crate::proto::nullnet_grpc::Net;
 use crate::services::service_info::ServiceInfo;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -99,6 +100,7 @@ pub(crate) fn detect_node_disconnect_changes(
 // --- Teardown helpers ---
 
 async fn teardown_invalidated_service(
+    net: Net,
     invalidated_service: &str,
     is_failed: bool,
     services: &mut HashMap<String, ServiceInfo>,
@@ -123,7 +125,7 @@ async fn teardown_invalidated_service(
         .collect();
 
     for name in services_to_cleanup {
-        teardown_chain(&name, services, orchestrator, None).await;
+        teardown_chain(net, &name, services, orchestrator, None).await;
     }
 
     if is_failed && let Some(s) = services.get_mut(invalidated_service) {
@@ -132,6 +134,7 @@ async fn teardown_invalidated_service(
 }
 
 async fn teardown_chain(
+    net: Net,
     name: &str,
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
@@ -155,7 +158,7 @@ async fn teardown_chain(
     for ((client_ip, client), (_, server)) in chain {
         let Some(client_ip) = client_ip else { continue };
         if let Some(ServiceInfo::Registered(reg)) = services.get_mut(server.name()) {
-            reg.remove_chains(client_ip, &client, num_proxy_clients, orchestrator)
+            reg.remove_chains(net, client_ip, &client, num_proxy_clients, orchestrator)
                 .await;
         }
     }
@@ -177,7 +180,7 @@ async fn teardown_chain(
 
         for (_, net_id, proxy_ip) in &proxy_teardowns {
             for dest in [service_ip, *proxy_ip] {
-                let _ = orchestrator.send_net_teardown(dest, *net_id).await;
+                let _ = orchestrator.send_net_teardown(net, dest, *net_id).await;
             }
         }
 
@@ -190,6 +193,7 @@ async fn teardown_chain(
 // --- Main apply function ---
 
 pub(crate) async fn apply_changes(
+    net: Net,
     changes: Vec<ServiceChange>,
     services: &mut HashMap<String, ServiceInfo>,
     loaded_services: Option<&HashMap<String, ServiceInfo>>,
@@ -198,17 +202,17 @@ pub(crate) async fn apply_changes(
     for change in changes {
         match change {
             ServiceChange::Removed { name } => {
-                teardown_invalidated_service(&name, true, services, orchestrator).await;
+                teardown_invalidated_service(net, &name, true, services, orchestrator).await;
                 services.remove(&name);
             }
             ServiceChange::DepsChanged { name } => {
-                teardown_invalidated_service(&name, false, services, orchestrator).await;
+                teardown_invalidated_service(net, &name, false, services, orchestrator).await;
             }
             ServiceChange::ReachabilityChanged { name } => {
-                teardown_chain(&name, services, orchestrator, None).await;
+                teardown_chain(net, &name, services, orchestrator, None).await;
             }
             ServiceChange::Unregistered { name } => {
-                teardown_invalidated_service(&name, true, services, orchestrator).await;
+                teardown_invalidated_service(net, &name, true, services, orchestrator).await;
             }
             ServiceChange::ProxyDisconnected { ip } => {
                 let proxy_services: Vec<String> = services
@@ -223,7 +227,7 @@ pub(crate) async fn apply_changes(
                     .map(|(name, _)| name.clone())
                     .collect();
                 for name in proxy_services {
-                    teardown_chain(&name, services, orchestrator, Some(ip)).await;
+                    teardown_chain(net, &name, services, orchestrator, Some(ip)).await;
                 }
             }
         }
