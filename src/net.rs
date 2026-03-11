@@ -1,18 +1,13 @@
 use crate::proto::nullnet_grpc::{
-    HostMapping, MsgId, NetMessage, VlanSetup, VxlanSetup, net_message,
+    HostMapping, MsgId, Net, NetMessage, VlanSetup, VxlanSetup, net_message,
 };
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{ErrorHandler, Location, location};
 use std::net::{IpAddr, Ipv4Addr};
 
-pub(crate) enum Net {
-    Vxlan,
-    Vlan,
-}
-
 impl Net {
     pub(crate) fn setup(
-        &self,
+        self,
         id: String,
         dest: IpAddr,
         remote_server_name: Option<String>,

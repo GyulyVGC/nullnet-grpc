@@ -1,5 +1,4 @@
-use crate::net::Net;
-use crate::proto::nullnet_grpc::{MsgId, NetMessage, VxlanTeardown, net_message};
+use crate::proto::nullnet_grpc::{MsgId, Net, NetMessage, VxlanTeardown, net_message};
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};

@@ -1,8 +1,9 @@
 use crate::graphviz::generate_graphviz;
-use crate::net::Net;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
-use crate::proto::nullnet_grpc::{Empty, MsgId, NetMessage, ProxyRequest, Services, Upstream};
+use crate::proto::nullnet_grpc::{
+    Empty, MsgId, Net, NetMessage, NetType, ProxyRequest, Services, Upstream,
+};
 use crate::services::changes::{apply_changes, detect_services_list_changes};
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::input::ServicesToml;
@@ -17,6 +18,8 @@ use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 pub(crate) struct NullnetGrpcImpl {
+    /// The network type to use
+    net_type: Net,
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
     /// Last registered VXLAN ID
@@ -27,6 +30,14 @@ pub(crate) struct NullnetGrpcImpl {
 
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
+        // TODO: read env at runtime
+        let net_type = option_env!("NET_TYPE").unwrap_or("VLAN");
+        let net_type = match net_type.to_uppercase().as_str() {
+            "VXLAN" => Net::Vxlan,
+            "VLAN" => Net::Vlan,
+            other => return Err(format!("Unsupported NET_TYPE: {other}")).handle_err(location!()),
+        };
+
         let services = Arc::new(RwLock::new(ServicesToml::load().await?));
 
         // regenerate the service graphviz periodically for debugging
@@ -47,6 +58,7 @@ impl NullnetGrpcImpl {
         });
 
         Ok(NullnetGrpcImpl {
+            net_type,
             services,
             last_registered_net: Arc::new(Mutex::new(100)),
             orchestrator,
@@ -328,6 +340,7 @@ impl NullnetGrpcImpl {
 impl NullnetGrpcImpl {
     pub(crate) fn new_for_test(services: HashMap<String, ServiceInfo>) -> Self {
         NullnetGrpcImpl {
+            net_type: Net::Vlan,
             services: Arc::new(RwLock::new(services)),
             last_registered_net: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
@@ -345,6 +358,18 @@ impl NullnetGrpcImpl {
 
 #[tonic::async_trait]
 impl NullnetGrpc for NullnetGrpcImpl {
+    async fn network_type(&self, _: Request<Empty>) -> Result<Response<NetType>, Status> {
+        Ok(Response::new(NetType {
+            net: self.net_type.into(),
+        }))
+    }
+
+    async fn services_list(&self, req: Request<Services>) -> Result<Response<Empty>, Status> {
+        self.services_list_impl(req)
+            .await
+            .map_err(|err| Status::internal(err.to_str()))
+    }
+
     type ControlChannelStream = ReceiverStream<Result<NetMessage, Status>>;
 
     async fn control_channel(
@@ -359,12 +384,6 @@ impl NullnetGrpc for NullnetGrpcImpl {
         );
 
         self.control_channel_impl(request)
-            .await
-            .map_err(|err| Status::internal(err.to_str()))
-    }
-
-    async fn services_list(&self, req: Request<Services>) -> Result<Response<Empty>, Status> {
-        self.services_list_impl(req)
             .await
             .map_err(|err| Status::internal(err.to_str()))
     }

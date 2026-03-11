@@ -5,11 +5,14 @@ package nullnet_grpc;
 service NullnetGrpc {
   // TAP-based clients APIs --------------------------------------------------------------------------------------------
 
-  // Control channel
-  rpc ControlChannel(stream MsgId) returns (stream NetMessage);
+  // Network type declaration
+  rpc NetworkType(Empty) returns (NetType);
 
   // Services list
   rpc ServicesList(Services) returns (Empty);
+
+  // Control channel
+  rpc ControlChannel(stream MsgId) returns (stream NetMessage);
 
   // Proxy-based clients APIs ------------------------------------------------------------------------------------------
 
@@ -18,6 +21,15 @@ service NullnetGrpc {
 }
 
 // TAP-based clients ---------------------------------------------------------------------------------------------------
+
+message NetType {
+   Net net = 1;
+}
+
+enum Net {
+  VLAN = 0;
+  VXLAN = 2;
+}
 
 message NetMessage {
   oneof message {
