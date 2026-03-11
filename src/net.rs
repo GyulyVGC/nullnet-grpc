@@ -72,6 +72,10 @@ impl Net {
     ) -> Option<(Ipv4Addr, NetMessage)> {
         let [_, _, a, b] = vxlan_id.to_be_bytes();
 
+        let br_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 2), 24)
+            .handle_err(location!())
+            .ok()?;
+
         let (ns_net, br_net) = if remote_server_name.is_some() {
             // this is for client
             let ns_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, 3), 24)
@@ -86,14 +90,11 @@ impl Net {
             let ns_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 1), 24)
                 .handle_err(location!())
                 .ok()?;
-            let br_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 2), 24)
-                .handle_err(location!())
-                .ok()?;
             (ns_net_server, br_net_server)
         };
 
         let host_mapping = remote_server_name.map(|name| HostMapping {
-            ip: br_net.ip().to_string(),
+            ip: br_net_server.ip().to_string(),
             name,
         });
 
