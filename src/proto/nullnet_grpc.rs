@@ -42,12 +42,10 @@ pub struct VlanSetup {
     #[prost(message, optional, tag = "7")]
     pub host_mapping: ::core::option::Option<HostMapping>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VlanTeardown {
     #[prost(uint32, tag = "1")]
     pub vlan_id: u32,
-    #[prost(string, tag = "2")]
-    pub veth_name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanSetup {
@@ -70,12 +68,10 @@ pub struct VxlanSetup {
     #[prost(message, optional, tag = "9")]
     pub host_mapping: ::core::option::Option<HostMapping>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanTeardown {
-    #[prost(string, tag = "1")]
-    pub ns_name: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub br_name: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "1")]
+    pub vxlan_id: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgId {

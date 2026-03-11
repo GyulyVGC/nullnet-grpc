@@ -26,13 +26,11 @@ impl Net {
             Net::Vlan => NetMessage {
                 message: Some(net_message::Message::VlanTeardown(VlanTeardown {
                     vlan_id: net_id,
-                    veth_name: format!("veth_{net_id}"),
                 })),
             },
             Net::Vxlan => NetMessage {
                 message: Some(net_message::Message::VxlanTeardown(VxlanTeardown {
-                    ns_name: format!("ns_{net_id}"),
-                    br_name: format!("br_{net_id}"),
+                    vxlan_id: net_id,
                 })),
             },
         }
