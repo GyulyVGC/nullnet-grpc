@@ -31,11 +31,11 @@ pub(crate) struct NullnetGrpcImpl {
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
         // TODO: read env at runtime
-        let net_type = option_env!("NET_TYPE").unwrap_or("VLAN");
+        let net_type = option_env!("NET_TYPE").unwrap_or_default();
         let net_type = match net_type.to_uppercase().as_str() {
             "VXLAN" => Net::Vxlan,
             "VLAN" => Net::Vlan,
-            other => return Err(format!("Unsupported NET_TYPE: {other}")).handle_err(location!()),
+            _ => Net::default(),
         };
 
         let services = Arc::new(RwLock::new(ServicesToml::load().await?));

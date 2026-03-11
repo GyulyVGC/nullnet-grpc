@@ -119,7 +119,7 @@ pub struct Empty {}
 #[repr(i32)]
 pub enum Net {
     Vlan = 0,
-    Vxlan = 2,
+    Vxlan = 1,
 }
 impl Net {
     /// String value of the enum field names used in the ProtoBuf definition.

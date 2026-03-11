@@ -2,6 +2,7 @@
 
 use crate::graphviz::render_graphviz;
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
+use crate::proto::nullnet_grpc::Net;
 use crate::services::input::{ServicesToml, apply_config_update};
 use crate::services::service_info::ServiceInfo;
 use std::collections::{HashMap, HashSet};
@@ -66,7 +67,7 @@ async fn register_services(server: &NullnetGrpcImpl, ip_map: &HashMap<&str, IpAd
 }
 
 fn assert_graphviz(services: &HashMap<String, ServiceInfo>, fixture: &str, expected_file: &str) {
-    let actual = render_graphviz(services);
+    let actual = render_graphviz(services, Net::default());
     let expected_path = fixture_path(fixture, expected_file);
 
     println!("--- {expected_file} ---\n{actual}");
@@ -137,7 +138,13 @@ async fn service_removed_remove_A() {
     let new_config = load_config(SERVICE_REMOVED, "remove_A.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    apply_config_update(
+        Net::default(),
+        &mut guard,
+        new_config,
+        server.orchestrator(),
+    )
+    .await;
     assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_A.dot");
 
     assert!(!guard.contains_key("A"));
@@ -153,7 +160,13 @@ async fn service_removed_remove_B() {
     let new_config = load_config(SERVICE_REMOVED, "remove_B.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    apply_config_update(
+        Net::default(),
+        &mut guard,
+        new_config,
+        server.orchestrator(),
+    )
+    .await;
     assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_B.dot");
 
     assert!(!guard.contains_key("B"));
@@ -203,7 +216,13 @@ async fn dep_changed_add_E_to_A() {
     let new_config = load_config(DEP_CHANGED, "add_E_to_A.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    apply_config_update(
+        Net::default(),
+        &mut guard,
+        new_config,
+        server.orchestrator(),
+    )
+    .await;
     assert_graphviz(&guard, DEP_CHANGED, "after_add_E_to_A.dot");
 
     assert_eq!(
@@ -222,7 +241,13 @@ async fn dep_changed_drop_C_from_A() {
     let new_config = load_config(DEP_CHANGED, "drop_C_from_A.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    apply_config_update(
+        Net::default(),
+        &mut guard,
+        new_config,
+        server.orchestrator(),
+    )
+    .await;
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_C_from_A.dot");
 
     assert!(guard.contains_key("A"));
@@ -238,7 +263,13 @@ async fn dep_changed_drop_all_from_D() {
     let new_config = load_config(DEP_CHANGED, "drop_all_from_D.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    apply_config_update(
+        Net::default(),
+        &mut guard,
+        new_config,
+        server.orchestrator(),
+    )
+    .await;
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_all_from_D.dot");
 
     assert!(guard["D"].dependencies().is_empty());
@@ -253,7 +284,13 @@ async fn dep_changed_swap_C_for_E() {
     let new_config = load_config(DEP_CHANGED, "swap_C_for_E.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    apply_config_update(
+        Net::default(),
+        &mut guard,
+        new_config,
+        server.orchestrator(),
+    )
+    .await;
     assert_graphviz(&guard, DEP_CHANGED, "after_swap_C_for_E.dot");
 
     assert_eq!(
@@ -265,7 +302,7 @@ async fn dep_changed_swap_C_for_E() {
 }
 
 // ===========================================================================
-// reachability_changed: A→B→C, D→E. proxy1→A+D, proxy2→B
+// reachability_changed: A→B→C, D→E. proxy1→A+D, proxy2→B.
 // B is both proxy-reachable and a dep of A.
 // ===========================================================================
 
@@ -308,7 +345,13 @@ async fn reachability_changed_unreachable_B() {
     let new_config = load_config(REACHABILITY_CHANGED, "unreachable_B.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    apply_config_update(
+        Net::default(),
+        &mut guard,
+        new_config,
+        server.orchestrator(),
+    )
+    .await;
     assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_B.dot");
 
     assert!(guard.contains_key("B"));
@@ -324,7 +367,13 @@ async fn reachability_changed_unreachable_D() {
     let new_config = load_config(REACHABILITY_CHANGED, "unreachable_D.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    apply_config_update(
+        Net::default(),
+        &mut guard,
+        new_config,
+        server.orchestrator(),
+    )
+    .await;
     assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_D.dot");
 
     assert!(!guard.contains_key("D"));
@@ -480,7 +529,7 @@ async fn node_disconnected_A_B() {
 
     server
         .orchestrator()
-        .handle_node_disconnect(ip(1, 1, 1, 1), server.services())
+        .handle_node_disconnect(Net::default(), ip(1, 1, 1, 1), server.services())
         .await;
 
     let guard = server.services().read().await;
@@ -498,7 +547,7 @@ async fn node_disconnected_C() {
 
     server
         .orchestrator()
-        .handle_node_disconnect(ip(2, 2, 2, 2), server.services())
+        .handle_node_disconnect(Net::default(), ip(2, 2, 2, 2), server.services())
         .await;
 
     let guard = server.services().read().await;
@@ -515,7 +564,7 @@ async fn node_disconnected_D() {
 
     server
         .orchestrator()
-        .handle_node_disconnect(ip(3, 3, 3, 3), server.services())
+        .handle_node_disconnect(Net::default(), ip(3, 3, 3, 3), server.services())
         .await;
 
     let guard = server.services().read().await;
@@ -532,7 +581,7 @@ async fn node_disconnected_proxy1() {
 
     server
         .orchestrator()
-        .handle_node_disconnect(ip(5, 5, 5, 5), server.services())
+        .handle_node_disconnect(Net::default(), ip(5, 5, 5, 5), server.services())
         .await;
 
     let guard = server.services().read().await;

@@ -109,7 +109,6 @@ impl Orchestrator {
         }
     }
 
-    // TODO: support generic NET
     pub(crate) async fn send_net_teardown(&self, net: Net, dest: IpAddr, net_id: u32) {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
