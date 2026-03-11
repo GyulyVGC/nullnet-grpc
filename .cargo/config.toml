@@ -1,2 +1,2 @@
 [env]
-NET_TYPE="VXLAN"
+NET_TYPE="VLAN"

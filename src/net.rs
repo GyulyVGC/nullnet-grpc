@@ -30,20 +30,19 @@ impl Net {
     ) -> Option<(Ipv4Addr, NetMessage)> {
         let [_, _, a, b] = vlan_id.to_be_bytes();
 
+        let server_veth = Ipv4Addr::new(10, a, b, 1);
+        let client_veth = Ipv4Addr::new(10, a, b, 2);
+
         let (local_veth, remote_veth) = if remote_server_name.is_some() {
             // this is for client
-            let remote_veth = Ipv4Addr::new(10, a, b, 1);
-            let local_veth = Ipv4Addr::new(10, a, b, 2);
-            (local_veth, remote_veth)
+            (client_veth, server_veth)
         } else {
             // this is for server
-            let local_veth = Ipv4Addr::new(10, a, b, 1);
-            let remote_veth = Ipv4Addr::new(10, a, b, 2);
-            (local_veth, remote_veth)
+            (server_veth, client_veth)
         };
 
         let host_mapping = remote_server_name.map(|name| HostMapping {
-            ip: remote_veth.to_string(),
+            ip: server_veth.to_string(),
             name,
         });
 
