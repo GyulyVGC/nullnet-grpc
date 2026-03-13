@@ -1,6 +1,7 @@
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::{Net, Upstream};
 use crate::services::clients::{Client, ClientInfo, Clients};
+use crate::services::edge::Edge;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -111,7 +112,7 @@ impl RegisteredServiceInfo {
         &self,
         service_name: String,
         services: &HashMap<String, ServiceInfo>,
-    ) -> Vec<((Option<IpAddr>, Client), (Option<IpAddr>, Client))> {
+    ) -> Vec<Edge> {
         let mut chain = Vec::new();
         let mut current_ip: Option<IpAddr> = Some(self.ip);
         let mut current_name = service_name;
@@ -120,10 +121,13 @@ impl RegisteredServiceInfo {
                 Some(ServiceInfo::Registered(reg)) => Some(reg.ip),
                 _ => None,
             };
-            chain.push((
-                (current_ip, Client::new(current_name.clone(), None)),
-                (dep_ip, Client::new(dep.clone(), None)),
-            ));
+            let edge = Edge::new(
+                current_ip,
+                Client::new(current_name.clone(), None),
+                dep_ip,
+                Client::new(dep.clone(), None),
+            );
+            chain.push(edge);
             current_ip = dep_ip;
             current_name.clone_from(dep);
         }

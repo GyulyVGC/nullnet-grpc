@@ -155,7 +155,10 @@ async fn teardown_chain(
 
     let chain = reg.dependency_chain(name.to_string(), services);
 
-    for ((client_ip, client), (_, server)) in chain {
+    for edge in chain {
+        let (client_ip, client) = edge.client;
+        let (_, server) = edge.server;
+
         let Some(client_ip) = client_ip else { continue };
         if let Some(ServiceInfo::Registered(reg)) = services.get_mut(server.name()) {
             reg.remove_chains(net, client_ip, &client, num_proxy_clients, orchestrator)

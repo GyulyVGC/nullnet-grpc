@@ -6,6 +6,7 @@ use crate::proto::nullnet_grpc::{
 };
 use crate::services::changes::{apply_changes, detect_services_list_changes};
 use crate::services::clients::{Client, ClientInfo};
+use crate::services::edge::RegisteredEdge;
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -181,27 +182,20 @@ impl NullnetGrpcImpl {
         let dep_chain = registered.dependency_chain(service_name.to_string(), &guard);
         drop(guard);
 
-        let mut dep_chain: Vec<((IpAddr, Client), (IpAddr, Client))> = dep_chain
+        let mut dep_chain: Vec<RegisteredEdge> = dep_chain
             .into_iter()
-            .map(|((cip, c), (sip, s))| {
-                Ok((
-                    (
-                        cip.ok_or("Dependency not registered")
-                            .handle_err(location!())?,
-                        c,
-                    ),
-                    (
-                        sip.ok_or("Dependency not registered")
-                            .handle_err(location!())?,
-                        s,
-                    ),
-                ))
+            .map(|edge| {
+                edge.into_registered()
+                    .ok_or("Dependency not registered")
+                    .handle_err(location!())
             })
             .collect::<Result<_, Error>>()?;
 
-        dep_chain.push((
-            (proxy_ip, proxy_client),
-            (service_ip, Client::new(service_name.to_string(), None)),
+        dep_chain.push(RegisteredEdge::new(
+            proxy_ip,
+            proxy_client,
+            service_ip,
+            Client::new(service_name.to_string(), None),
         ));
 
         self.net_chain_setup(dep_chain).await
@@ -236,10 +230,13 @@ impl NullnetGrpcImpl {
 
     pub(crate) async fn net_chain_setup(
         &self,
-        dep_chain: Vec<((IpAddr, Client), (IpAddr, Client))>,
+        dep_chain: Vec<RegisteredEdge>,
     ) -> Result<Ipv4Addr, Error> {
         let mut join_set_outer = JoinSet::new();
-        for ((client_ethernet, client), (server_ethernet, server)) in dep_chain {
+        for edge in dep_chain {
+            let (client_ethernet, client) = edge.client;
+            let (server_ethernet, server) = edge.server;
+
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
             let last_registered_net = self.last_registered_net.clone();
