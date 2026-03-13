@@ -1,8 +1,11 @@
-mod clients;
+mod graphviz;
+mod net;
 mod nullnet_grpc_impl;
 mod orchestrator;
 mod proto;
-mod service_info;
+mod services;
+#[cfg(test)]
+mod tests;
 
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpcServer;
@@ -51,7 +54,4 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
     NullnetGrpcImpl::new().await
 }
 
-// TODO: support live reloading of services.toml on gRPC server
-// TODO: unregister services of machines whose control channel was closed
-// TODO: clean up veth interfaces of unregistered services
-// TODO: reuse VLAN IDs of unregistered services
+// TODO: reuse NET IDs of unregistered services

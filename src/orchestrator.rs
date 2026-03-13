@@ -1,13 +1,16 @@
-use crate::proto::nullnet_grpc::{MsgId, VlanSetup};
+use crate::proto::nullnet_grpc::{MsgId, Net, NetMessage};
+use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
+use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
 
-type OutboundStream = mpsc::Sender<Result<VlanSetup, Status>>;
+type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
 
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
@@ -25,8 +28,10 @@ impl Orchestrator {
 
     pub(crate) async fn add_client(
         &self,
+        net: Net,
         request: Request<Streaming<MsgId>>,
         outbound: OutboundStream,
+        services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
     ) -> Result<(), Error> {
         let client_ip = request
             .remote_addr()
@@ -44,30 +49,98 @@ impl Orchestrator {
                     let _ = tx.send(());
                 }
             }
+
             println!("Control channel from '{client_ip}' closed");
+            orchestrator
+                .handle_node_disconnect(net, client_ip, &services)
+                .await;
         });
 
         Ok(())
     }
 
-    pub(crate) async fn send_vlan_setup(
+    pub(crate) async fn remove_client(&self, ip: &IpAddr) {
+        self.clients.write().await.remove(ip);
+    }
+
+    pub(crate) async fn handle_node_disconnect(
         &self,
+        net: Net,
         client_ip: IpAddr,
-        mut vlan_setup: VlanSetup,
-    ) -> Result<(), Error> {
-        let clients = self.clients.read().await;
-        if let Some(outbound) = clients.get(&client_ip) {
+        services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
+    ) {
+        self.remove_client(&client_ip).await;
+
+        let mut services_guard = services.write().await;
+        let changes = detect_node_disconnect_changes(&services_guard, client_ip);
+        apply_changes(net, changes, &mut services_guard, None, self).await;
+    }
+
+    pub(crate) async fn send_net_setup(
+        &self,
+        net: Net,
+        dest: IpAddr,
+        remote_server_name: Option<String>,
+        net_id: u32,
+        remote: IpAddr,
+    ) -> Option<Ipv4Addr> {
+        let outbound = self.clients.read().await.get(&dest).cloned();
+        if let Some(outbound) = outbound {
             let (tx, rx) = oneshot::channel();
-            let id = Uuid::new_v4().to_string();
-            self.pending.lock().await.insert(id.clone(), tx);
-            vlan_setup.msg_id = Some(MsgId { id });
-            outbound
-                .send(Ok(vlan_setup))
-                .await
-                .handle_err(location!())?;
-            rx.await.handle_err(location!())
+            let msg_id = Uuid::new_v4().to_string();
+            self.pending.lock().await.insert(msg_id.clone(), tx);
+
+            let (server_net, message) =
+                net.setup(msg_id.clone(), dest, remote_server_name, net_id, remote)?;
+
+            if outbound.send(Ok(message)).await.is_err() {
+                self.pending.lock().await.remove(&msg_id);
+                return None;
+            }
+
+            if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
+                result.ok().map(|()| server_net)
+            } else {
+                self.pending.lock().await.remove(&msg_id);
+                None
+            }
         } else {
-            Err(format!("Client with IP {client_ip} not found")).handle_err(location!())
+            None
         }
+    }
+
+    pub(crate) async fn send_net_teardown(&self, net: Net, dest: IpAddr, net_id: u32) {
+        let outbound = self.clients.read().await.get(&dest).cloned();
+        if let Some(outbound) = outbound {
+            println!("Sending network {net_id} teardown to client {dest}");
+
+            let message = net.teardown(net_id);
+
+            let _ = outbound.send(Ok(message)).await.handle_err(location!());
+        }
+    }
+}
+
+#[cfg(test)]
+impl Orchestrator {
+    pub(crate) async fn register_fake_client(&self, ip: IpAddr) {
+        use crate::proto::nullnet_grpc::net_message;
+
+        let (tx, mut rx) = mpsc::channel::<Result<NetMessage, Status>>(64);
+        self.clients.write().await.insert(ip, tx);
+
+        let pending = self.pending.clone();
+        tokio::spawn(async move {
+            while let Some(Ok(msg)) = rx.recv().await {
+                // auto-ack NetSetup messages
+                if let Some(net_message::Message::VlanSetup(setup)) = msg.message {
+                    if let Some(msg_id) = setup.msg_id {
+                        if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+            }
+        });
     }
 }

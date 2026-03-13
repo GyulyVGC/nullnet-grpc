@@ -1,0 +1,13 @@
+digraph G {
+	bgcolor=grey10;
+	node [color=white, fontcolor=white];
+	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
+
+	"A" [style=solid, color=green];
+
+	"B" [style=solid, color=green];
+
+	"C" [style=dashed, color=green];
+
+	"D" [style=dashed, color=red];
+}

@@ -1,7 +1,7 @@
 mod proto;
 
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
-use crate::nullnet_grpc::{MsgId, ProxyRequest, Services, Upstream, VlanSetup};
+use crate::nullnet_grpc::{Empty, MsgId, NetMessage, NetType, ProxyRequest, Services, Upstream};
 pub use proto::*;
 use tokio::sync::mpsc;
 use tonic::Request;
@@ -45,10 +45,20 @@ impl NullnetGrpcInterface {
     }
 
     #[allow(clippy::missing_errors_doc)]
+    pub async fn network_type(&self) -> Result<NetType, String> {
+        self.client
+            .clone()
+            .network_type(Request::new(Empty {}))
+            .await
+            .map(tonic::Response::into_inner)
+            .map_err(|e| e.to_string())
+    }
+
+    #[allow(clippy::missing_errors_doc)]
     pub async fn control_channel(
         &self,
         receiver: mpsc::Receiver<MsgId>,
-    ) -> Result<Streaming<VlanSetup>, String> {
+    ) -> Result<Streaming<NetMessage>, String> {
         let receiver = ReceiverStream::new(receiver);
 
         Ok(self

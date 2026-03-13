@@ -1,13 +1,16 @@
-use crate::clients::{Client, ClientInfo};
+use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
-    Empty, HostMapping, MsgId, ProxyRequest, Services, Upstream, VlanSetup,
+    Empty, MsgId, Net, NetMessage, NetType, ProxyRequest, Services, Upstream,
 };
-use crate::service_info::{ServiceInfo, ServicesToml};
+use crate::services::changes::{apply_changes, detect_services_list_changes};
+use crate::services::clients::{Client, ClientInfo};
+use crate::services::edge::RegisteredEdge;
+use crate::services::input::ServicesToml;
+use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc};
@@ -16,35 +19,54 @@ use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 pub(crate) struct NullnetGrpcImpl {
+    /// The network type to use
+    net_type: Net,
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
-    /// Last registered VLAN ID
-    last_registered_vlan: Arc<Mutex<u16>>,
-    /// Orchestrator to manage TAP-based clients and VLAN setups
+    /// Last registered NET ID
+    last_registered_net: Arc<Mutex<u32>>,
+    /// Orchestrator to manage TAP-based clients and NET setups
     orchestrator: Orchestrator,
 }
 
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
-        // read services from file
-        let services_toml_str = tokio::fs::read_to_string("services.toml")
-            .await
-            .handle_err(location!())?;
-        let services_toml: ServicesToml =
-            toml::from_str(&services_toml_str).handle_err(location!())?;
-        println!("Loaded services: {services_toml:?}");
-
-        let ret = NullnetGrpcImpl {
-            services: Arc::new(RwLock::new(services_toml.services_map())),
-            // start from next id = 2 since 0 is reserved and 1 is the default VLAN
-            last_registered_vlan: Arc::new(Mutex::new(1)),
-            orchestrator: Orchestrator::new(),
+        // TODO: read env at runtime
+        let net_type = option_env!("NET_TYPE").unwrap_or_default();
+        let net_type = match net_type.to_uppercase().as_str() {
+            "VXLAN" => Net::Vxlan,
+            "VLAN" => Net::Vlan,
+            _ => Net::default(),
         };
 
-        // regenerate the service graphviz for debugging
-        let _ = ret.generate_graphviz().await;
+        println!("Using network type: {net_type:?}");
 
-        Ok(ret)
+        let services = Arc::new(RwLock::new(ServicesToml::load().await?));
+
+        // regenerate the service graphviz periodically for debugging
+        let services_2 = services.clone();
+        tokio::spawn(async move {
+            generate_graphviz(services_2, net_type).await;
+        });
+
+        let orchestrator = Orchestrator::new();
+        let orchestrator_2 = orchestrator.clone();
+
+        // keep services up to date with the services.toml file
+        let services_2 = services.clone();
+        let net = net_type;
+        tokio::spawn(async move {
+            ServicesToml::watch(net, &services_2, orchestrator_2.clone())
+                .await
+                .expect("failed to watch services.toml for changes");
+        });
+
+        Ok(NullnetGrpcImpl {
+            net_type,
+            services,
+            last_registered_net: Arc::new(Mutex::new(100)),
+            orchestrator,
+        })
     }
 
     async fn control_channel_impl(
@@ -53,7 +75,9 @@ impl NullnetGrpcImpl {
     ) -> Result<Response<<NullnetGrpcImpl as NullnetGrpc>::ControlChannelStream>, Error> {
         let (outbound, receiver) = mpsc::channel(64);
 
-        self.orchestrator.add_client(request, outbound).await?;
+        self.orchestrator
+            .add_client(self.net_type, request, outbound, self.services.clone())
+            .await?;
 
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
@@ -99,22 +123,10 @@ impl NullnetGrpcImpl {
             return Ok(Response::new(upstream));
         }
 
-        let (service_ip, service_port) = registered.ip_port();
-
-        // setup dependent services' VLANs
-        let mut dep_chain = registered
-            .dependency_chain(service_name.clone(), &self.services)
+        let (_, service_port) = registered.ip_port();
+        let upstream_ip = self
+            .setup_proxy_chain(&service_name, proxy_ip, &client_ip.to_string())
             .await?;
-        dep_chain.push((
-            (proxy_ip, proxy_client),
-            (service_ip, Client::new(service_name, None)),
-        ));
-        // create dedicated VLAN across all the client/server pair of the dependency chain
-        let upstream_ip = self.vlan_chain_setup(dep_chain).await?;
-
-        // regenerate the service graphviz for debugging
-        // TODO: remove this from here!
-        let _ = self.generate_graphviz().await;
 
         Ok(Response::new(Upstream {
             ip: upstream_ip.to_string(),
@@ -139,140 +151,183 @@ impl NullnetGrpcImpl {
             sender_ip, req.services
         );
 
-        // get services previously registered from this sender_ip
-        let previously_registered: Vec<String> = self
+        let service_list: Vec<(String, u16)> = req
             .services
-            .read()
-            .await
-            .iter()
-            .filter_map(|(name, si)| {
-                if let ServiceInfo::Registered(reg) = si {
-                    let (ip, _) = reg.ip_port();
-                    if ip == sender_ip {
-                        return Some(name.clone());
-                    }
-                }
-                None
-            })
-            .collect();
-
-        // get services that are no longer present
-        let to_be_unregistered: Vec<String> = previously_registered
             .into_iter()
-            .filter(|name| !req.services.iter().any(|s| s.name == *name))
-            .collect();
+            .map(|s| Ok((s.name, u16::try_from(s.port).handle_err(location!())?)))
+            .collect::<Result<_, Error>>()?;
 
-        let mut services_mut = self.services.write().await;
-
-        // unregister services that are no longer present
-        for service_name in to_be_unregistered {
-            services_mut.entry(service_name).and_modify(|si| {
-                // re-check that it's still registered from this sender_ip to avoid race conditions
-                if let ServiceInfo::Registered(reg) = si {
-                    let (ip, _) = reg.ip_port();
-                    if ip == sender_ip {
-                        si.unregister();
-                    }
-                }
-            });
-        }
-
-        // re-register services that are still present
-        for service in req.services {
-            let service_port = u16::try_from(service.port).handle_err(location!())?;
-            let service_name = service.name;
-            services_mut.entry(service_name.clone()).and_modify(|si| {
-                si.register(sender_ip, service_port);
-            });
-        }
-
-        drop(services_mut);
-
-        // regenerate the service graphviz for debugging
-        let _ = self.generate_graphviz().await;
+        self.apply_services_list(sender_ip, &service_list).await?;
 
         Ok(Response::new(Empty {}))
     }
 
-    pub(crate) async fn vlan_chain_setup(
+    pub(crate) async fn setup_proxy_chain(
         &self,
-        dep_chain: Vec<((IpAddr, Client), (IpAddr, Client))>,
-    ) -> Result<IpAddr, Error> {
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+    ) -> Result<Ipv4Addr, Error> {
+        let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
+
+        let guard = self.services.read().await;
+        let service_info = guard
+            .get(service_name)
+            .ok_or("Service not found")
+            .handle_err(location!())?;
+        let ServiceInfo::Registered(registered) = service_info else {
+            Err("Service is not registered").handle_err(location!())?
+        };
+        let service_ip = registered.ip_port().0;
+        let dep_chain = registered.dependency_chain(service_name.to_string(), &guard);
+        drop(guard);
+
+        let mut dep_chain: Vec<RegisteredEdge> = dep_chain
+            .into_iter()
+            .map(|edge| {
+                edge.into_registered()
+                    .ok_or("Dependency not registered")
+                    .handle_err(location!())
+            })
+            .collect::<Result<_, Error>>()?;
+
+        dep_chain.push(RegisteredEdge::new(
+            proxy_ip,
+            proxy_client,
+            service_ip,
+            Client::new(service_name.to_string(), None),
+        ));
+
+        self.net_chain_setup(dep_chain).await
+    }
+
+    pub(crate) async fn apply_services_list(
+        &self,
+        sender_ip: IpAddr,
+        service_list: &[(String, u16)],
+    ) -> Result<(), Error> {
+        let mut services_mut = self.services.write().await;
+
+        let changes = detect_services_list_changes(&services_mut, sender_ip, service_list);
+        apply_changes(
+            self.net_type,
+            changes,
+            &mut services_mut,
+            None,
+            &self.orchestrator,
+        )
+        .await;
+
+        // re-register services that are still present
+        for (name, port) in service_list {
+            services_mut.entry(name.clone()).and_modify(|si| {
+                si.register(sender_ip, *port);
+            });
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn net_chain_setup(
+        &self,
+        dep_chain: Vec<RegisteredEdge>,
+    ) -> Result<Ipv4Addr, Error> {
         let mut join_set_outer = JoinSet::new();
-        for ((client_ethernet, client), (server_ethernet, server)) in dep_chain {
+        for edge in dep_chain {
+            let (client_ethernet, client) = edge.client;
+            let (server_ethernet, server) = edge.server;
+
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
-            let last_registered_vlan = self.last_registered_vlan.clone();
+            let last_registered_net = self.last_registered_net.clone();
+            let net_type = self.net_type;
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
-                // check if the link is already set up
-                let server_service = services.read().await.get(&server.name()).cloned();
-                if let Some(ServiceInfo::Registered(reg)) = server_service
-                    && reg.is_client_setup(&client).is_some()
-                {
+                // add chain and check if the link is already set up
+                let mut services_guard = services.write().await;
+                let Some(ServiceInfo::Registered(reg)) = services_guard.get_mut(server.name())
+                else {
+                    return None;
+                };
+                if reg.is_client_setup(&client).is_some() {
+                    reg.add_chain(&client);
+                    return None;
+                }
+                // reserve the slot so concurrent requests see it as in-progress
+                reg.add_client(client.clone(), ClientInfo::placeholder());
+                drop(services_guard);
+
+                // TODO: check for NET ID overflow (max 65535) and reclaim freed IDs
+                let mut last_id = last_registered_net.lock().await;
+                *last_id += 1;
+                let net_id = *last_id;
+                drop(last_id);
+
+                let orch = orchestrator.clone();
+                let server_res =
+                    orch.send_net_setup(net_type, server_ethernet, None, net_id, client_ethernet);
+                let orch2 = orchestrator.clone();
+                let client_res = orch2.send_net_setup(
+                    net_type,
+                    client_ethernet,
+                    Some(server.name().to_string()),
+                    net_id,
+                    server_ethernet,
+                );
+
+                let (server_ok, client_ok) = tokio::join!(server_res, client_res);
+
+                if server_ok.is_none() || client_ok.is_none() {
+                    // rollback: teardown whichever side succeeded
+                    if server_ok.is_some() {
+                        let () = orchestrator
+                            .send_net_teardown(net_type, server_ethernet, net_id)
+                            .await;
+                    }
+                    if client_ok.is_some() {
+                        orchestrator
+                            .send_net_teardown(net_type, client_ethernet, net_id)
+                            .await;
+                    }
+                    // remove placeholder
+                    if let Some(ServiceInfo::Registered(reg)) =
+                        services.write().await.get_mut(server.name())
+                    {
+                        reg.clients_mut().remove(&client);
+                    }
                     return None;
                 }
 
-                let mut last_id = last_registered_vlan.lock().await;
-                *last_id += 1;
-                let vlan_id = *last_id;
-                drop(last_id);
+                let net_ip_server = server_ok?;
+                let net_ip_client = client_ok?;
 
-                let [a, b] = vlan_id.to_be_bytes();
-                let server_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 1));
-                let client_veth = IpAddr::V4(Ipv4Addr::new(10, a, b, 2));
-                let host_mapping = Some(HostMapping {
-                    ip: server_veth.to_string(),
-                    name: server.name(),
-                });
-                let msg = VlanSetup {
-                    msg_id: None,
-                    client_ethernet: client_ethernet.to_string(),
-                    server_ethernet: server_ethernet.to_string(),
-                    client_veth: client_veth.to_string(),
-                    server_veth: server_veth.to_string(),
-                    vlan_id: u32::from(vlan_id),
-                    host_mapping,
-                };
-
-                let upstream_ip = if client.is_proxy() {
-                    Some(server_veth)
-                } else {
-                    None
-                };
-
-                let destinations = [client_ethernet, server_ethernet];
-                // remove duplicates from destinations (in case services are hosted on the same machine)
-                let destinations: HashSet<IpAddr> = destinations.iter().copied().collect();
-
-                let mut join_set_inner = JoinSet::new();
-                for dest in destinations {
-                    let msg = msg.clone();
-                    let orchestrator = orchestrator.clone();
-                    join_set_inner.spawn(async move {
-                        // TODO: handle errors?
-                        let _ = orchestrator.send_vlan_setup(dest, msg).await;
-                        println!("{dest} acknowledged");
-                    });
-                }
-
-                while join_set_inner.join_next().await.is_some() {}
+                println!("{server_ethernet} acknowledged");
+                println!("{client_ethernet} acknowledged");
 
                 // register the link between the two services
-                services
-                    .write()
-                    .await
-                    .entry(server.name())
-                    .and_modify(|si| {
-                        if let ServiceInfo::Registered(reg) = si {
-                            let time_ms = init_time.elapsed().as_millis();
-                            let ci = ClientInfo::new(client_veth, server_veth, vlan_id, time_ms);
-                            reg.add_client(client, ci);
-                        }
-                    });
+                let mut guard = services.write().await;
+                if let Some(ServiceInfo::Registered(reg)) = guard.get_mut(server.name()) {
+                    let time_ms = init_time.elapsed().as_millis();
+                    let ci = ClientInfo::new(net_ip_client, net_ip_server, net_id, time_ms);
+                    reg.add_client(client.clone(), ci);
+                    reg.add_chain(&client);
+                } else {
+                    // service was unregistered during setup — teardown NETs
+                    drop(guard);
+                    orchestrator
+                        .send_net_teardown(net_type, server_ethernet, net_id)
+                        .await;
+                    orchestrator
+                        .send_net_teardown(net_type, client_ethernet, net_id)
+                        .await;
+                }
 
-                upstream_ip
+                if client.is_proxy().is_some() {
+                    Some(net_ip_server)
+                } else {
+                    None
+                }
             });
         }
 
@@ -284,44 +339,46 @@ impl NullnetGrpcImpl {
         }
 
         ret_val
-            .ok_or("No valid upstream IP found after VLAN chain setup")
+            .ok_or("No valid upstream IP found after NET chain setup")
             .handle_err(location!())
     }
+}
 
-    async fn generate_graphviz(&self) -> Result<(), Error> {
-        let services = self.services.read().await.clone();
-        let mut graphviz = String::from(
-            "digraph G {\n\
-                \tbgcolor=grey10;\n\
-                \tnode [color=white, fontcolor=white];\n\
-                \tedge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];\n\n",
-        );
-        for (name, info) in services {
-            let style = info.graphviz_style();
-            writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!())?;
-            if let ServiceInfo::Registered(registered) = info {
-                for (c, ci) in registered.clients() {
-                    let c_name = c.name();
-                    let edge_label = ci.graphviz_edge_label(false);
-                    writeln!(graphviz, "\t\"{c_name}\" -> \"{name}\" {edge_label};")
-                        .handle_err(location!())?;
-                }
-            }
-            graphviz.push('\n');
+#[cfg(test)]
+impl NullnetGrpcImpl {
+    pub(crate) fn new_for_test(services: HashMap<String, ServiceInfo>) -> Self {
+        NullnetGrpcImpl {
+            net_type: Net::Vlan,
+            services: Arc::new(RwLock::new(services)),
+            last_registered_net: Arc::new(Mutex::new(100)),
+            orchestrator: Orchestrator::new(),
         }
-        graphviz = graphviz.trim().to_string();
-        graphviz.push_str("\n}\n");
-        tokio::fs::write("graph.dot", graphviz)
-            .await
-            .handle_err(location!())?;
+    }
 
-        Ok(())
+    pub(crate) fn orchestrator(&self) -> &Orchestrator {
+        &self.orchestrator
+    }
+
+    pub(crate) fn services(&self) -> &Arc<RwLock<HashMap<String, ServiceInfo>>> {
+        &self.services
     }
 }
 
 #[tonic::async_trait]
 impl NullnetGrpc for NullnetGrpcImpl {
-    type ControlChannelStream = ReceiverStream<Result<VlanSetup, Status>>;
+    async fn network_type(&self, _: Request<Empty>) -> Result<Response<NetType>, Status> {
+        Ok(Response::new(NetType {
+            net: self.net_type.into(),
+        }))
+    }
+
+    async fn services_list(&self, req: Request<Services>) -> Result<Response<Empty>, Status> {
+        self.services_list_impl(req)
+            .await
+            .map_err(|err| Status::internal(err.to_str()))
+    }
+
+    type ControlChannelStream = ReceiverStream<Result<NetMessage, Status>>;
 
     async fn control_channel(
         &self,
@@ -335,12 +392,6 @@ impl NullnetGrpc for NullnetGrpcImpl {
         );
 
         self.control_channel_impl(request)
-            .await
-            .map_err(|err| Status::internal(err.to_str()))
-    }
-
-    async fn services_list(&self, req: Request<Services>) -> Result<Response<Empty>, Status> {
-        self.services_list_impl(req)
             .await
             .map_err(|err| Status::internal(err.to_str()))
     }

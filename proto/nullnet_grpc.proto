@@ -5,11 +5,14 @@ package nullnet_grpc;
 service NullnetGrpc {
   // TAP-based clients APIs --------------------------------------------------------------------------------------------
 
-  // Control channel
-  rpc ControlChannel(stream MsgId) returns (stream VlanSetup);
+  // Network type declaration
+  rpc NetworkType(Empty) returns (NetType);
 
   // Services list
   rpc ServicesList(Services) returns (Empty);
+
+  // Control channel
+  rpc ControlChannel(stream MsgId) returns (stream NetMessage);
 
   // Proxy-based clients APIs ------------------------------------------------------------------------------------------
 
@@ -19,14 +22,54 @@ service NullnetGrpc {
 
 // TAP-based clients ---------------------------------------------------------------------------------------------------
 
+message NetType {
+   Net net = 1;
+}
+
+enum Net {
+  VLAN = 0;
+  VXLAN = 1;
+}
+
+message NetMessage {
+  oneof message {
+    // VLAN setup and teardown
+    VlanSetup vlan_setup = 1;
+    VlanTeardown vlan_teardown = 2;
+    // VXLAN setup and teardown
+    VxlanSetup vxlan_setup = 3;
+    VxlanTeardown vxlan_teardown = 4;
+  }
+}
+
 message VlanSetup {
   MsgId msg_id = 1;
-  string client_ethernet = 2;
-  string client_veth = 3;
-  string server_ethernet = 4;
-  string server_veth = 5;
-  uint32 vlan_id = 6;
+  uint32 vlan_id = 2;
+  string local_veth = 3;
+  string remote_veth = 4;
+  string local_ip = 5;
+  string remote_ip = 6;
   optional HostMapping host_mapping = 7;
+}
+
+message VlanTeardown {
+  uint32 vlan_id = 1;
+}
+
+message VxlanSetup {
+  MsgId msg_id = 1;
+  uint32 vxlan_id = 2;
+  string ns_name = 3;
+  string ns_net = 4;
+  string br_name = 5;
+  string br_net = 6;
+  string local_ip = 7;
+  string remote_ip = 8;
+  optional HostMapping host_mapping = 9;
+}
+
+message VxlanTeardown {
+  uint32 vxlan_id = 1;
 }
 
 message MsgId {

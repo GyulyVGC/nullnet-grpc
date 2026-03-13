@@ -1,13 +1,11 @@
-use crate::clients::{Client, ClientInfo, Clients};
-use crate::proto::nullnet_grpc::Upstream;
-use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use serde::Deserialize;
+use crate::orchestrator::Orchestrator;
+use crate::proto::nullnet_grpc::{Net, Upstream};
+use crate::services::clients::{Client, ClientInfo, Clients};
+use crate::services::edge::Edge;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum ServiceInfo {
     Unregistered(UnregisteredServiceInfo),
     Registered(RegisteredServiceInfo),
@@ -44,17 +42,6 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn graphviz_style(&self) -> &'static str {
-        match self {
-            ServiceInfo::Unregistered(unreg) if unreg.is_proxy_reachable => {
-                "[style=solid, color=red]"
-            }
-            ServiceInfo::Unregistered(_) => "[style=dashed, color=red]",
-            ServiceInfo::Registered(reg) if reg.is_proxy_reachable => "[style=solid, color=green]",
-            ServiceInfo::Registered(_) => "[style=dashed, color=green]",
-        }
-    }
-
     pub(crate) fn is_proxy_reachable(&self) -> bool {
         match self {
             ServiceInfo::Unregistered(unreg) => unreg.is_proxy_reachable,
@@ -62,7 +49,22 @@ impl ServiceInfo {
         }
     }
 
-    fn dependencies(&self) -> Vec<String> {
+    pub(crate) fn update_from_file(&mut self, loaded: &Self) {
+        let loaded_dependencies = loaded.dependencies();
+        let loaded_is_proxy_reachable = loaded.is_proxy_reachable();
+        match self {
+            ServiceInfo::Unregistered(unreg) => {
+                unreg.dependencies = loaded_dependencies;
+                unreg.is_proxy_reachable = loaded_is_proxy_reachable;
+            }
+            ServiceInfo::Registered(reg) => {
+                reg.dependencies = loaded_dependencies;
+                reg.is_proxy_reachable = loaded_is_proxy_reachable;
+            }
+        }
+    }
+
+    pub(crate) fn dependencies(&self) -> Vec<String> {
         match self {
             ServiceInfo::Unregistered(unreg) => unreg.dependencies.clone(),
             ServiceInfo::Registered(reg) => reg.dependencies.clone(),
@@ -77,7 +79,7 @@ impl ServiceInfo {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct UnregisteredServiceInfo {
     dependencies: Vec<String>,
     is_proxy_reachable: bool,
@@ -92,7 +94,7 @@ impl UnregisteredServiceInfo {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct RegisteredServiceInfo {
     /// Dependencies of the service.
     dependencies: Vec<String>,
@@ -106,35 +108,64 @@ pub(crate) struct RegisteredServiceInfo {
 }
 
 impl RegisteredServiceInfo {
-    pub(crate) async fn dependency_chain(
+    pub(crate) fn dependency_chain(
         &self,
         service_name: String,
-        services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
-    ) -> Result<Vec<((IpAddr, Client), (IpAddr, Client))>, Error> {
+        services: &HashMap<String, ServiceInfo>,
+    ) -> Vec<Edge> {
         let mut chain = Vec::new();
-        let mut current_ip = self.ip;
+        let mut current_ip: Option<IpAddr> = Some(self.ip);
         let mut current_name = service_name;
         for dep in &self.dependencies {
-            let ServiceInfo::Registered(dep_reg) = services
-                .read()
-                .await
-                .get(dep)
-                .cloned()
-                .ok_or("Dependency service not found")
-                .handle_err(location!())?
-            else {
-                return Err("Dependency service is not registered yet").handle_err(location!());
+            let dep_ip = match services.get(dep) {
+                Some(ServiceInfo::Registered(reg)) => Some(reg.ip),
+                _ => None,
             };
-            let dep_ip = dep_reg.ip;
-            chain.push((
-                (current_ip, Client::new(current_name.clone(), None)),
-                (dep_ip, Client::new(dep.clone(), None)),
-            ));
+            let edge = Edge::new(
+                current_ip,
+                Client::new(current_name.clone(), None),
+                dep_ip,
+                Client::new(dep.clone(), None),
+            );
+            chain.push(edge);
             current_ip = dep_ip;
-            current_name = dep.clone();
+            current_name.clone_from(dep);
         }
+        chain
+    }
 
-        Ok(chain)
+    pub(crate) fn add_chain(&mut self, client: &Client) {
+        if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
+            client_info.add_active_chain();
+        }
+    }
+
+    pub(crate) async fn remove_chains(
+        &mut self,
+        net: Net,
+        client_ip: IpAddr,
+        client: &Client,
+        num_chains: usize,
+        orchestrator: &Orchestrator,
+    ) {
+        let net_to_remove = if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
+            client_info.remove_active_chains(num_chains);
+            if client_info.active_chains() == 0 {
+                Some(client_info.net_id())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(net_id) = net_to_remove {
+            self.clients_mut().remove(client);
+
+            for dest in [self.ip, client_ip] {
+                orchestrator.send_net_teardown(net, dest, net_id).await;
+            }
+        }
     }
 
     pub(crate) fn ip_port(&self) -> (IpAddr, u16) {
@@ -148,8 +179,8 @@ impl RegisteredServiceInfo {
     pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
         self.clients
             .is_client_setup(client)
-            .map(|veth_ip| Upstream {
-                ip: veth_ip.to_string(),
+            .map(|server_net| Upstream {
+                ip: server_net.to_string(),
                 port: u32::from(self.port),
             })
     }
@@ -157,39 +188,12 @@ impl RegisteredServiceInfo {
     pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
         self.clients.clients()
     }
-}
 
-#[derive(Deserialize, Debug)]
-pub(crate) struct ServicesToml {
-    services: Vec<ServiceToml>,
-}
-
-impl ServicesToml {
-    pub(crate) fn services_map(&self) -> HashMap<String, ServiceInfo> {
-        let mut ret_val: HashMap<String, ServiceInfo> = HashMap::new();
-
-        // first insert proxy-reachable services
-        for s in &self.services {
-            ret_val.insert(
-                s.name.clone(),
-                ServiceInfo::new(s.dependencies.clone(), true),
-            );
-        }
-
-        for s in &self.services {
-            for d in &s.dependencies {
-                if !ret_val.contains_key(d) {
-                    ret_val.insert(d.clone(), ServiceInfo::new(Vec::new(), false));
-                }
-            }
-        }
-
-        ret_val
+    pub(crate) fn clients_mut(&mut self) -> &mut HashMap<Client, ClientInfo> {
+        self.clients.clients_mut()
     }
-}
 
-#[derive(Deserialize, Debug)]
-pub(crate) struct ServiceToml {
-    name: String,
-    dependencies: Vec<String>,
+    pub(crate) fn dependencies(&self) -> &Vec<String> {
+        &self.dependencies
+    }
 }
