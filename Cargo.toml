@@ -7,7 +7,7 @@ edition = "2024"
 async-trait = "0.1.89"
 tonic = { version = "0.14.4", features = ["_tls-any", "tls-native-roots"] }
 prost = "0.14.3"
-tonic-prost = "0.14.4"
+tonic-prost = "0.14.5"
 nullnet-liberror = { git = "https://github.com/NullNet-ai/libguard.git", branch = "nullnet-liberror-print" }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "fs"] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
