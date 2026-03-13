@@ -18,7 +18,7 @@ ipnetwork = "0.21.1"
 notify = "8.2.0"
 
 [build-dependencies]
-tonic-prost-build = "0.14.4"
+tonic-prost-build = "0.14.5"
 
 #[dev-dependencies]
 #serde_test = "1.0.177"
