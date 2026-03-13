@@ -9,15 +9,15 @@ use std::net::{IpAddr, Ipv4Addr};
 impl Net {
     pub(crate) fn setup(
         self,
-        id: String,
+        msg_id: String,
         dest: IpAddr,
         remote_server_name: Option<String>,
         net_id: u32,
         remote: IpAddr,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         match self {
-            Net::Vlan => Self::vlan_setup(id, dest, remote_server_name, net_id, remote),
-            Net::Vxlan => Self::vxlan_setup(id, dest, remote_server_name, net_id, remote),
+            Net::Vlan => Self::vlan_setup(msg_id, dest, remote_server_name, net_id, remote),
+            Net::Vxlan => Self::vxlan_setup(msg_id, dest, remote_server_name, net_id, remote),
         }
     }
 
@@ -38,7 +38,7 @@ impl Net {
 
     #[allow(clippy::unnecessary_wraps)]
     fn vlan_setup(
-        id: String,
+        msg_id: String,
         dest: IpAddr,
         remote_server_name: Option<String>,
         vlan_id: u32,
@@ -66,7 +66,7 @@ impl Net {
             server_veth,
             NetMessage {
                 message: Some(net_message::Message::VlanSetup(VlanSetup {
-                    msg_id: Some(MsgId { id }),
+                    msg_id: Some(MsgId { id: msg_id }),
                     vlan_id,
                     local_veth: local_veth.to_string(),
                     remote_veth: remote_veth.to_string(),
@@ -79,7 +79,7 @@ impl Net {
     }
 
     fn vxlan_setup(
-        id: String,
+        msg_id: String,
         dest: IpAddr,
         remote_server_name: Option<String>,
         vxlan_id: u32,
@@ -117,7 +117,7 @@ impl Net {
             br_net.ip(),
             NetMessage {
                 message: Some(net_message::Message::VxlanSetup(VxlanSetup {
-                    msg_id: Some(MsgId { id }),
+                    msg_id: Some(MsgId { id: msg_id }),
                     vxlan_id,
                     ns_name: format!("ns_{vxlan_id}"),
                     ns_net: ns_net.to_string(),

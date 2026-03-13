@@ -87,21 +87,21 @@ impl Orchestrator {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
             let (tx, rx) = oneshot::channel();
-            let id = Uuid::new_v4().to_string();
-            self.pending.lock().await.insert(id.clone(), tx);
+            let msg_id = Uuid::new_v4().to_string();
+            self.pending.lock().await.insert(msg_id.clone(), tx);
 
             let (server_net, message) =
-                net.setup(id.clone(), dest, remote_server_name, net_id, remote)?;
+                net.setup(msg_id.clone(), dest, remote_server_name, net_id, remote)?;
 
             if outbound.send(Ok(message)).await.is_err() {
-                self.pending.lock().await.remove(&id);
+                self.pending.lock().await.remove(&msg_id);
                 return None;
             }
 
             if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
                 result.ok().map(|()| server_net)
             } else {
-                self.pending.lock().await.remove(&id);
+                self.pending.lock().await.remove(&msg_id);
                 None
             }
         } else {
