@@ -4,6 +4,7 @@ use crate::graphviz::render_graphviz;
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::services::input::{ServicesToml, apply_config_update};
 use crate::services::service_info::ServiceInfo;
+use crate::timeout::apply_proxy_timeouts;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -542,4 +543,114 @@ async fn node_disconnected_proxy1() {
     assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
     assert!(matches!(guard["C"], ServiceInfo::Registered(_)));
     assert!(matches!(guard["D"], ServiceInfo::Registered(_)));
+}
+
+// ===========================================================================
+// proxy_timeout: A→C→D, B→D (D shared). proxy1→A+B, proxy2→A.
+// A has timeout=1, B has timeout=2.
+// ===========================================================================
+
+const PROXY_TIMEOUT: &str = "proxy_timeout";
+
+async fn proxy_timeout_setup() -> NullnetGrpcImpl {
+    let services = load_fixture(PROXY_TIMEOUT).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([
+        ("A", ip(1, 1, 1, 1)),
+        ("B", ip(2, 2, 2, 2)),
+        ("C", ip(3, 3, 3, 3)),
+        ("D", ip(4, 4, 4, 4)),
+    ]);
+    let proxy1 = ip(5, 5, 5, 5);
+    let proxy2 = ip(6, 6, 6, 6);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy1).await;
+    server.orchestrator().register_fake_client(proxy2).await;
+
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+    setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
+    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
+
+    let guard = server.services().read().await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "start.dot");
+    drop(guard);
+
+    server
+}
+
+/// After A's timeout (1s), both proxy clients on A expire. B's proxy client
+/// survives (timeout=2). A→C→D edges removed (no more proxy clients on A).
+/// B→D edge survives.
+#[tokio::test]
+async fn proxy_timeout_A() {
+    let server = proxy_timeout_setup().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    let mut guard = server.services().write().await;
+    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
+
+    // A is still registered but has no proxy clients
+    assert!(matches!(guard["A"], ServiceInfo::Registered(_)));
+    // B's proxy client is still alive
+    assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
+    if let ServiceInfo::Registered(reg) = &guard["B"] {
+        assert_eq!(reg.clients().len(), 1);
+    }
+    if let ServiceInfo::Registered(reg) = &guard["A"] {
+        assert!(reg.clients().is_empty());
+    }
+}
+
+/// After B's timeout (2s), B's proxy client also expires.
+/// All proxy chains gone; all services still registered.
+#[tokio::test]
+async fn proxy_timeout_A_then_B() {
+    let server = proxy_timeout_setup().await;
+
+    // A expires after 1s
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
+    drop(guard);
+
+    // B expires after 2s total
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A_then_B.dot");
+
+    // all services still registered, but no proxy clients left
+    for (_, si) in guard.iter() {
+        if let ServiceInfo::Registered(reg) = si {
+            assert!(
+                reg.clients().is_empty(),
+                "expected no proxy clients after both timeouts"
+            );
+        }
+    }
+}
+
+/// After 2s+ both A and B expire simultaneously in a single apply.
+#[tokio::test]
+async fn proxy_timeout_all_at_once() {
+    let server = proxy_timeout_setup().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+
+    let mut guard = server.services().write().await;
+    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_all.dot");
+
+    for (_, si) in guard.iter() {
+        if let ServiceInfo::Registered(reg) = si {
+            assert!(
+                reg.clients().is_empty(),
+                "expected no proxy clients after full timeout"
+            );
+        }
+    }
 }

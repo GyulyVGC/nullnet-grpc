@@ -21,10 +21,17 @@ pub(crate) async fn check_proxy_timeouts(
         }
 
         let mut services_mut = services.write().await;
-        let changes = collect_timed_out_clients(&services_mut);
-        if !changes.is_empty() {
-            apply_changes(changes, &mut services_mut, None, &orchestrator).await;
-        }
+        apply_proxy_timeouts(&mut services_mut, &orchestrator).await;
+    }
+}
+
+pub(crate) async fn apply_proxy_timeouts(
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    let changes = collect_timed_out_clients(services);
+    if !changes.is_empty() {
+        apply_changes(changes, services, None, orchestrator).await;
     }
 }
 
