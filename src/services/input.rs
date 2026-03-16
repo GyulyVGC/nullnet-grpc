@@ -128,6 +128,9 @@ pub(crate) async fn apply_config_update(
 #[derive(Deserialize)]
 struct ServiceToml {
     name: String,
+    /// Per-service proxy client timeout in seconds.
+    /// If omitted, defaults to the global `TIMEOUT` env var (or 60s).
+    /// A value of 0 disables the timeout (proxy clients never expire).
     timeout: Option<u64>,
     dependencies: Vec<String>,
 }

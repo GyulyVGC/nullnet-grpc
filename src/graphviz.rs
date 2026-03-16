@@ -58,7 +58,7 @@ impl ServiceInfo {
         match self {
             ServiceInfo::Unregistered(_) if is_proxy_reachable => "[style=solid, color=red]",
             ServiceInfo::Unregistered(_) => "[style=dashed, color=red]",
-            ServiceInfo::Registered(reg) if is_proxy_reachable => "[style=solid, color=green]",
+            ServiceInfo::Registered(_) if is_proxy_reachable => "[style=solid, color=green]",
             ServiceInfo::Registered(_) => "[style=dashed, color=green]",
         }
     }
