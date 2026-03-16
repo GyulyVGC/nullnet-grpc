@@ -312,7 +312,7 @@ async fn reachability_changed_unreachable_B() {
     assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_B.dot");
 
     assert!(guard.contains_key("B"));
-    assert!(!guard["B"].is_proxy_reachable());
+    assert!(guard["B"].is_proxy_reachable().is_none());
 }
 
 /// D removed from [[services]] and no other service depends on it, so D and E

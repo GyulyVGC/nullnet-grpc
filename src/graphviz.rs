@@ -54,7 +54,7 @@ pub(crate) async fn generate_graphviz(services: Arc<RwLock<HashMap<String, Servi
 
 impl ServiceInfo {
     fn graphviz_style(&self) -> &'static str {
-        let is_proxy_reachable = self.is_proxy_reachable();
+        let is_proxy_reachable = self.is_proxy_reachable().is_some();
         match self {
             ServiceInfo::Unregistered(_) if is_proxy_reachable => "[style=solid, color=red]",
             ServiceInfo::Unregistered(_) => "[style=dashed, color=red]",

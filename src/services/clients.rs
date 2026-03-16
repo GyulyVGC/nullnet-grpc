@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::time::Instant;
 
 #[derive(Clone, Default, Debug)]
 pub(super) struct Clients {
@@ -60,6 +61,7 @@ pub(crate) struct ClientInfo {
     net_id: u32,
     time_ms: u128,
     active_chains: usize,
+    latest: Instant,
 }
 
 impl ClientInfo {
@@ -75,6 +77,7 @@ impl ClientInfo {
             net_id,
             time_ms,
             active_chains: 0,
+            latest: Instant::now(),
         }
     }
 
@@ -85,6 +88,7 @@ impl ClientInfo {
             net_id: 0,
             time_ms: 0,
             active_chains: 0,
+            latest: Instant::now(),
         }
     }
 
@@ -106,6 +110,11 @@ impl ClientInfo {
 
     pub(super) fn add_active_chain(&mut self) {
         self.active_chains += 1;
+        self.set_latest_now();
+    }
+
+    pub(super) fn set_latest_now(&mut self) {
+        self.latest = Instant::now();
     }
 
     pub(super) fn remove_active_chains(&mut self, num_chains: usize) {

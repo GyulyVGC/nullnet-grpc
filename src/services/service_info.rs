@@ -12,7 +12,7 @@ pub(crate) enum ServiceInfo {
 }
 
 impl ServiceInfo {
-    pub(crate) fn new(dependencies: Vec<String>, is_proxy_reachable: bool) -> Self {
+    pub(crate) fn new(dependencies: Vec<String>, is_proxy_reachable: Option<u64>) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
             dependencies,
             is_proxy_reachable,
@@ -42,7 +42,7 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn is_proxy_reachable(&self) -> bool {
+    pub(crate) fn is_proxy_reachable(&self) -> Option<u64> {
         match self {
             ServiceInfo::Unregistered(unreg) => unreg.is_proxy_reachable,
             ServiceInfo::Registered(reg) => reg.is_proxy_reachable,
@@ -81,12 +81,14 @@ impl ServiceInfo {
 
 #[derive(Clone, Debug)]
 pub(crate) struct UnregisteredServiceInfo {
+    /// Dependencies of the service.
     dependencies: Vec<String>,
-    is_proxy_reachable: bool,
+    /// Whether the proxy is reachable for this service, with the associated timeout.
+    is_proxy_reachable: Option<u64>,
 }
 
 impl UnregisteredServiceInfo {
-    fn new(dependencies: Vec<String>, is_proxy_reachable: bool) -> Self {
+    fn new(dependencies: Vec<String>, is_proxy_reachable: Option<u64>) -> Self {
         Self {
             dependencies,
             is_proxy_reachable,
@@ -98,7 +100,8 @@ impl UnregisteredServiceInfo {
 pub(crate) struct RegisteredServiceInfo {
     /// Dependencies of the service.
     dependencies: Vec<String>,
-    is_proxy_reachable: bool,
+    /// Whether the proxy is reachable for this service, with the associated timeout.
+    is_proxy_reachable: Option<u64>,
     /// IP address of the host.
     ip: IpAddr,
     /// Port of the service.
@@ -137,6 +140,12 @@ impl RegisteredServiceInfo {
     pub(crate) fn add_chain(&mut self, client: &Client) {
         if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
             client_info.add_active_chain();
+        }
+    }
+
+    pub(crate) fn set_latest_now(&mut self, client: &Client) {
+        if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
+            client_info.set_latest_now();
         }
     }
 

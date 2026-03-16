@@ -96,7 +96,7 @@ impl NullnetGrpcImpl {
             .ok_or("Service not found")
             .handle_err(location!())?;
 
-        if !service_info.is_proxy_reachable() {
+        if service_info.is_proxy_reachable().is_none() {
             Err("Service is not reachable via proxy").handle_err(location!())?;
         }
 
@@ -107,6 +107,13 @@ impl NullnetGrpcImpl {
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
         if let Some(upstream) = registered.is_client_setup(&proxy_client) {
             println!("'{client_ip}' ---> '{service_name}' is already set up");
+
+            // update the latest timestamp for this client since it's being used again
+            let mut services_mut = self.services.write().await;
+            if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(&service_name) {
+                reg.set_latest_now(&proxy_client);
+            }
+
             return Ok(Response::new(upstream));
         }
 

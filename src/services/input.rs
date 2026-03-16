@@ -1,3 +1,4 @@
+use crate::constants::TIMEOUT;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{apply_changes, detect_config_changes};
 use crate::services::service_info::ServiceInfo;
@@ -98,12 +99,15 @@ impl ServicesToml {
                     .skip(1)
                     .cloned()
                     .collect();
-                ret_val.insert(d.clone(), ServiceInfo::new(d_deps, false));
+                ret_val.insert(d.clone(), ServiceInfo::new(d_deps, None));
             }
         }
 
         for s in self.services {
-            ret_val.insert(s.name, ServiceInfo::new(s.dependencies, true));
+            ret_val.insert(
+                s.name,
+                ServiceInfo::new(s.dependencies, Some(s.timeout.unwrap_or(*TIMEOUT))),
+            );
         }
 
         ret_val
@@ -122,5 +126,6 @@ pub(crate) async fn apply_config_update(
 #[derive(Deserialize)]
 struct ServiceToml {
     name: String,
+    timeout: Option<u64>,
     dependencies: Vec<String>,
 }
