@@ -1,5 +1,5 @@
 use crate::orchestrator::Orchestrator;
-use crate::proto::nullnet_grpc::{Net, Upstream};
+use crate::proto::nullnet_grpc::Upstream;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::edge::Edge;
 use std::collections::HashMap;
@@ -142,7 +142,6 @@ impl RegisteredServiceInfo {
 
     pub(crate) async fn remove_chains(
         &mut self,
-        net: Net,
         client_ip: IpAddr,
         client: &Client,
         num_chains: usize,
@@ -163,7 +162,7 @@ impl RegisteredServiceInfo {
             self.clients_mut().remove(client);
 
             for dest in [self.ip, client_ip] {
-                orchestrator.send_net_teardown(net, dest, net_id).await;
+                orchestrator.send_net_teardown(dest, net_id).await;
             }
         }
     }

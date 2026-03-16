@@ -1,4 +1,4 @@
-use crate::proto::nullnet_grpc::Net;
+use crate::constants::NET_TYPE;
 use crate::services::clients::ClientInfo;
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{ErrorHandler, Location, location};
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>, net_type: Net) -> String {
+pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String {
     let mut entries: Vec<_> = services.iter().collect();
     entries.sort_by_key(|(name, _)| *name);
 
@@ -26,7 +26,7 @@ pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>, net_type:
             edges.sort_by_key(|(c, _)| c.display_name());
             for (c, ci) in edges {
                 let c_name = c.display_name();
-                let edge_label = ci.graphviz_edge_label(false, net_type);
+                let edge_label = ci.graphviz_edge_label(false);
                 let _ = writeln!(graphviz, "\t\"{c_name}\" -> \"{name}\" {edge_label};")
                     .handle_err(location!());
             }
@@ -38,13 +38,10 @@ pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>, net_type:
     graphviz
 }
 
-pub(crate) async fn generate_graphviz(
-    services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
-    net_type: Net,
-) {
+pub(crate) async fn generate_graphviz(services: Arc<RwLock<HashMap<String, ServiceInfo>>>) {
     loop {
         let services = services.read().await.clone();
-        let graphviz = render_graphviz(&services, net_type);
+        let graphviz = render_graphviz(&services);
         let _ = tokio::fs::write("graph.dot", graphviz)
             .await
             .handle_err(location!());
@@ -68,12 +65,12 @@ impl ServiceInfo {
 }
 
 impl ClientInfo {
-    fn graphviz_edge_label(&self, show_ends: bool, net_type: Net) -> String {
+    fn graphviz_edge_label(&self, show_ends: bool) -> String {
         let client_br = self.client_net();
         let server_br = self.server_net();
         let net_id = self.net_id();
         let time_ms = self.time_ms();
-        let net_type_str = net_type.as_str_name();
+        let net_type_str = NET_TYPE.as_str_name();
         if show_ends {
             format!(
                 "[label=\"{net_type_str} {net_id} [{time_ms}ms]\", taillabel=\"{client_br}\", headlabel=\"{server_br}\"]"

@@ -1,8 +1,9 @@
+use crate::constants::NET_TYPE;
 use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
-    Empty, MsgId, Net, NetMessage, NetType, ProxyRequest, Services, Upstream,
+    Empty, MsgId, NetMessage, NetType, ProxyRequest, Services, Upstream,
 };
 use crate::services::changes::{apply_changes, detect_services_list_changes};
 use crate::services::clients::{Client, ClientInfo};
@@ -19,8 +20,6 @@ use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 pub(crate) struct NullnetGrpcImpl {
-    /// The network type to use
-    net_type: Net,
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
     /// Last registered NET ID
@@ -31,22 +30,12 @@ pub(crate) struct NullnetGrpcImpl {
 
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
-        // TODO: read env at runtime
-        let net_type = option_env!("NET_TYPE").unwrap_or_default();
-        let net_type = match net_type.to_uppercase().as_str() {
-            "VXLAN" => Net::Vxlan,
-            "VLAN" => Net::Vlan,
-            _ => Net::default(),
-        };
-
-        println!("Using network type: {net_type:?}");
-
         let services = Arc::new(RwLock::new(ServicesToml::load().await?));
 
         // regenerate the service graphviz periodically for debugging
         let services_2 = services.clone();
         tokio::spawn(async move {
-            generate_graphviz(services_2, net_type).await;
+            generate_graphviz(services_2).await;
         });
 
         let orchestrator = Orchestrator::new();
@@ -54,15 +43,13 @@ impl NullnetGrpcImpl {
 
         // keep services up to date with the services.toml file
         let services_2 = services.clone();
-        let net = net_type;
         tokio::spawn(async move {
-            ServicesToml::watch(net, &services_2, orchestrator_2.clone())
+            ServicesToml::watch(&services_2, orchestrator_2.clone())
                 .await
                 .expect("failed to watch services.toml for changes");
         });
 
         Ok(NullnetGrpcImpl {
-            net_type,
             services,
             last_registered_net: Arc::new(Mutex::new(100)),
             orchestrator,
@@ -76,7 +63,7 @@ impl NullnetGrpcImpl {
         let (outbound, receiver) = mpsc::channel(64);
 
         self.orchestrator
-            .add_client(self.net_type, request, outbound, self.services.clone())
+            .add_client(request, outbound, self.services.clone())
             .await?;
 
         Ok(Response::new(ReceiverStream::new(receiver)))
@@ -209,14 +196,7 @@ impl NullnetGrpcImpl {
         let mut services_mut = self.services.write().await;
 
         let changes = detect_services_list_changes(&services_mut, sender_ip, service_list);
-        apply_changes(
-            self.net_type,
-            changes,
-            &mut services_mut,
-            None,
-            &self.orchestrator,
-        )
-        .await;
+        apply_changes(changes, &mut services_mut, None, &self.orchestrator).await;
 
         // re-register services that are still present
         for (name, port) in service_list {
@@ -240,7 +220,6 @@ impl NullnetGrpcImpl {
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
             let last_registered_net = self.last_registered_net.clone();
-            let net_type = self.net_type;
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
@@ -266,10 +245,9 @@ impl NullnetGrpcImpl {
 
                 let orch = orchestrator.clone();
                 let server_res =
-                    orch.send_net_setup(net_type, server_ethernet, None, net_id, client_ethernet);
+                    orch.send_net_setup(server_ethernet, None, net_id, client_ethernet);
                 let orch2 = orchestrator.clone();
                 let client_res = orch2.send_net_setup(
-                    net_type,
                     client_ethernet,
                     Some(server.name().to_string()),
                     net_id,
@@ -282,12 +260,12 @@ impl NullnetGrpcImpl {
                     // rollback: teardown whichever side succeeded
                     if server_ok.is_some() {
                         let () = orchestrator
-                            .send_net_teardown(net_type, server_ethernet, net_id)
+                            .send_net_teardown(server_ethernet, net_id)
                             .await;
                     }
                     if client_ok.is_some() {
                         orchestrator
-                            .send_net_teardown(net_type, client_ethernet, net_id)
+                            .send_net_teardown(client_ethernet, net_id)
                             .await;
                     }
                     // remove placeholder
@@ -316,10 +294,10 @@ impl NullnetGrpcImpl {
                     // service was unregistered during setup — teardown NETs
                     drop(guard);
                     orchestrator
-                        .send_net_teardown(net_type, server_ethernet, net_id)
+                        .send_net_teardown(server_ethernet, net_id)
                         .await;
                     orchestrator
-                        .send_net_teardown(net_type, client_ethernet, net_id)
+                        .send_net_teardown(client_ethernet, net_id)
                         .await;
                 }
 
@@ -348,7 +326,6 @@ impl NullnetGrpcImpl {
 impl NullnetGrpcImpl {
     pub(crate) fn new_for_test(services: HashMap<String, ServiceInfo>) -> Self {
         NullnetGrpcImpl {
-            net_type: Net::Vlan,
             services: Arc::new(RwLock::new(services)),
             last_registered_net: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
@@ -368,7 +345,7 @@ impl NullnetGrpcImpl {
 impl NullnetGrpc for NullnetGrpcImpl {
     async fn network_type(&self, _: Request<Empty>) -> Result<Response<NetType>, Status> {
         Ok(Response::new(NetType {
-            net: self.net_type.into(),
+            net: (*NET_TYPE).into(),
         }))
     }
 

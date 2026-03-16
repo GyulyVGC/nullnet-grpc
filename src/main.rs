@@ -1,3 +1,4 @@
+mod constants;
 mod graphviz;
 mod net;
 mod nullnet_grpc_impl;
