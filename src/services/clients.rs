@@ -125,7 +125,7 @@ impl ClientInfo {
         self.active_chains
     }
 
-    pub(crate) fn latest(&self) -> Instant {
+    pub(super) fn latest(&self) -> Instant {
         self.latest
     }
 }

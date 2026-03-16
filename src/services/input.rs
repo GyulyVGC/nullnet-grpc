@@ -10,8 +10,8 @@ use std::ops::Sub;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Notify, RwLock};
 use tokio::sync::mpsc as tokio_mpsc;
+use tokio::sync::{Notify, RwLock};
 use tokio::time::Instant;
 
 const SERVICES_PATH: &str = "./services/services.toml";

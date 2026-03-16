@@ -4,6 +4,7 @@ use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::edge::Edge;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub(crate) enum ServiceInfo {
@@ -203,5 +204,25 @@ impl RegisteredServiceInfo {
 
     pub(crate) fn dependencies(&self) -> &Vec<String> {
         &self.dependencies
+    }
+
+    pub(crate) fn expired_proxy_clients(&self, timeout: Duration) -> Vec<Client> {
+        let now = Instant::now();
+        self.clients
+            .clients()
+            .iter()
+            .filter(|(c, ci)| c.is_proxy().is_some() && now.duration_since(ci.latest()) >= timeout)
+            .map(|(c, _)| c.clone())
+            .collect()
+    }
+
+    pub(crate) fn nearest_proxy_expiry(&self, timeout: Duration) -> Option<Duration> {
+        let now = Instant::now();
+        self.clients
+            .clients()
+            .iter()
+            .filter(|(c, _)| c.is_proxy().is_some())
+            .map(|(_, ci)| timeout.saturating_sub(now.duration_since(ci.latest())))
+            .min()
     }
 }

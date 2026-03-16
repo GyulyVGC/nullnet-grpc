@@ -4,7 +4,7 @@ use crate::services::changes::{ServiceChange, apply_changes};
 use crate::services::service_info::ServiceInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
 
 pub(crate) async fn check_proxy_timeouts(
@@ -29,7 +29,6 @@ pub(crate) async fn check_proxy_timeouts(
 }
 
 fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<ServiceChange> {
-    let now = Instant::now();
     let mut changes = Vec::new();
 
     for (name, si) in services {
@@ -43,17 +42,11 @@ fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<Ser
             continue;
         };
 
-        let timeout_duration = Duration::from_secs(timeout);
-        for (client, ci) in reg.clients() {
-            if client.is_proxy().is_none() {
-                continue;
-            }
-            if now.duration_since(ci.latest()) >= timeout_duration {
-                changes.push(ServiceChange::ProxyClientTimedOut {
-                    name: name.clone(),
-                    client: client.clone(),
-                });
-            }
+        for client in reg.expired_proxy_clients(Duration::from_secs(timeout)) {
+            changes.push(ServiceChange::ProxyClientTimedOut {
+                name: name.clone(),
+                client,
+            });
         }
     }
 
@@ -61,7 +54,6 @@ fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<Ser
 }
 
 fn nearest_timeout(services: &HashMap<String, ServiceInfo>) -> Duration {
-    let now = Instant::now();
     let mut nearest = Duration::from_secs(*TIMEOUT);
 
     for si in services.values() {
@@ -77,14 +69,10 @@ fn nearest_timeout(services: &HashMap<String, ServiceInfo>) -> Duration {
         // cap by the configured timeout so new clients are caught within one period
         nearest = nearest.min(timeout_duration);
 
-        if let ServiceInfo::Registered(reg) = si {
-            for (client, ci) in reg.clients() {
-                if client.is_proxy().is_none() {
-                    continue;
-                }
-                let remaining = timeout_duration.saturating_sub(now.duration_since(ci.latest()));
-                nearest = nearest.min(remaining);
-            }
+        if let ServiceInfo::Registered(reg) = si
+            && let Some(expiry) = reg.nearest_proxy_expiry(timeout_duration)
+        {
+            nearest = nearest.min(expiry);
         }
     }
 

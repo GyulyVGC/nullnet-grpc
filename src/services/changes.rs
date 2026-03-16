@@ -3,7 +3,7 @@ use crate::services::clients::Client;
 use crate::services::service_info::ServiceInfo;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub(crate) enum ServiceChange {
     /// Service removed from config entirely.
@@ -50,7 +50,6 @@ pub(crate) fn detect_config_changes(
     }
 
     // services with changed deps, reachability, or timeout
-    let now = Instant::now();
     for (name, loaded_info) in loaded {
         if let Some(old_info) = current.get(name) {
             if loaded_info.dependencies() != old_info.dependencies() {
@@ -69,16 +68,11 @@ pub(crate) fn detect_config_changes(
             {
                 // timeout tightened or introduced: expire clients already past the new limit
                 if let ServiceInfo::Registered(reg) = old_info {
-                    let timeout_duration = Duration::from_secs(new_timeout);
-                    for (client, ci) in reg.clients() {
-                        if client.is_proxy().is_some()
-                            && now.duration_since(ci.latest()) >= timeout_duration
-                        {
-                            changes.push(ServiceChange::ProxyClientTimedOut {
-                                name: name.clone(),
-                                client: client.clone(),
-                            });
-                        }
+                    for client in reg.expired_proxy_clients(Duration::from_secs(new_timeout)) {
+                        changes.push(ServiceChange::ProxyClientTimedOut {
+                            name: name.clone(),
+                            client,
+                        });
                     }
                 }
             }
