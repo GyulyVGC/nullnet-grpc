@@ -10,11 +10,12 @@ use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::RegisteredEdge;
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
+use crate::timeout::check_proxy_timeouts;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, Notify, RwLock, mpsc};
 use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -39,14 +40,23 @@ impl NullnetGrpcImpl {
         });
 
         let orchestrator = Orchestrator::new();
-        let orchestrator_2 = orchestrator.clone();
+        let config_changed = Arc::new(Notify::new());
 
         // keep services up to date with the services.toml file
         let services_2 = services.clone();
+        let orchestrator_2 = orchestrator.clone();
+        let config_changed_2 = config_changed.clone();
         tokio::spawn(async move {
-            ServicesToml::watch(&services_2, orchestrator_2.clone())
+            ServicesToml::watch(&services_2, orchestrator_2, config_changed_2)
                 .await
                 .expect("failed to watch services.toml for changes");
+        });
+
+        // periodically check for timed-out proxy clients and tear down their chains
+        let services_2 = services.clone();
+        let orchestrator_2 = orchestrator.clone();
+        tokio::spawn(async move {
+            check_proxy_timeouts(services_2, orchestrator_2, config_changed).await;
         });
 
         Ok(NullnetGrpcImpl {

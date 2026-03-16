@@ -124,4 +124,8 @@ impl ClientInfo {
     pub(super) fn active_chains(&self) -> usize {
         self.active_chains
     }
+
+    pub(crate) fn latest(&self) -> Instant {
+        self.latest
+    }
 }

@@ -10,7 +10,7 @@ use std::ops::Sub;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::time::Instant;
 
@@ -40,6 +40,7 @@ impl ServicesToml {
     pub(crate) async fn watch(
         services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
         orchestrator: Orchestrator,
+        config_changed: Arc<Notify>,
     ) -> Result<(), Error> {
         let mut services_directory = PathBuf::from(SERVICES_PATH);
         services_directory.pop();
@@ -76,6 +77,7 @@ impl ServicesToml {
                     if let Ok(loaded_services) = ServicesToml::load().await {
                         let services_mut = &mut *services.write().await;
                         apply_config_update(services_mut, loaded_services, &orchestrator).await;
+                        config_changed.notify_one();
                     }
                     last_update_time = Instant::now();
                 }
