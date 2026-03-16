@@ -1,5 +1,6 @@
 [[services]]
 name = "color.com"
+timeout = 0
 dependencies = ["fs.color.com"]
 
 #[[services]]
@@ -8,4 +9,5 @@ dependencies = ["fs.color.com"]
 
 [[services]]
 name = "fs.color.com"
+timeout = 30
 dependencies = []

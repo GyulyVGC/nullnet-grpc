@@ -1,8 +1,9 @@
 use crate::orchestrator::Orchestrator;
-use crate::proto::nullnet_grpc::Net;
+use crate::services::clients::Client;
 use crate::services::service_info::ServiceInfo;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::time::Duration;
 
 pub(crate) enum ServiceChange {
     /// Service removed from config entirely.
@@ -15,6 +16,24 @@ pub(crate) enum ServiceChange {
     Unregistered { name: String },
     /// A proxy node disconnected; tear down its proxy chains.
     ProxyDisconnected { ip: IpAddr },
+    /// A proxy client's timeout expired; tear down its chains.
+    ProxyClientTimedOut { name: String, client: Client },
+}
+
+enum ProxyFilter<'a> {
+    All,
+    ByIp(IpAddr),
+    ByClient(&'a Client),
+}
+
+impl ProxyFilter<'_> {
+    fn matches(&self, client: &Client) -> bool {
+        match self {
+            ProxyFilter::All => client.is_proxy().is_some(),
+            ProxyFilter::ByIp(ip) => client.is_proxy() == Some(*ip),
+            ProxyFilter::ByClient(c) => client == *c,
+        }
+    }
 }
 
 pub(crate) fn detect_config_changes(
@@ -30,13 +49,32 @@ pub(crate) fn detect_config_changes(
         }
     }
 
-    // services with changed deps or reachability
+    // services with changed deps, reachability, or timeout
     for (name, loaded_info) in loaded {
         if let Some(old_info) = current.get(name) {
             if loaded_info.dependencies() != old_info.dependencies() {
                 changes.push(ServiceChange::DepsChanged { name: name.clone() });
-            } else if loaded_info.is_proxy_reachable() != old_info.is_proxy_reachable() {
+            } else if loaded_info.is_proxy_reachable().is_some()
+                != old_info.is_proxy_reachable().is_some()
+            {
+                // reachability toggled (Some ↔ None)
                 changes.push(ServiceChange::ReachabilityChanged { name: name.clone() });
+            } else if let (Some(new_timeout), Some(old_timeout)) = (
+                loaded_info.is_proxy_reachable(),
+                old_info.is_proxy_reachable(),
+            ) && new_timeout != old_timeout
+                && new_timeout > 0
+                && (old_timeout == 0 || new_timeout < old_timeout)
+            {
+                // timeout tightened or introduced: expire clients already past the new limit
+                if let ServiceInfo::Registered(reg) = old_info {
+                    for client in reg.expired_proxy_clients(Duration::from_secs(new_timeout)) {
+                        changes.push(ServiceChange::ProxyClientTimedOut {
+                            name: name.clone(),
+                            client,
+                        });
+                    }
+                }
             }
         }
     }
@@ -100,7 +138,6 @@ pub(crate) fn detect_node_disconnect_changes(
 // --- Teardown helpers ---
 
 async fn teardown_invalidated_service(
-    net: Net,
     invalidated_service: &str,
     is_failed: bool,
     services: &mut HashMap<String, ServiceInfo>,
@@ -125,7 +162,7 @@ async fn teardown_invalidated_service(
         .collect();
 
     for name in services_to_cleanup {
-        teardown_chain(net, &name, services, orchestrator, None).await;
+        teardown_chain(&name, services, orchestrator, ProxyFilter::All).await;
     }
 
     if is_failed && let Some(s) = services.get_mut(invalidated_service) {
@@ -134,11 +171,10 @@ async fn teardown_invalidated_service(
 }
 
 async fn teardown_chain(
-    net: Net,
     name: &str,
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
-    proxy_filter: Option<IpAddr>,
+    proxy_filter: ProxyFilter<'_>,
 ) {
     let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
         return;
@@ -147,10 +183,7 @@ async fn teardown_chain(
     let num_proxy_clients = reg
         .clients()
         .iter()
-        .filter(|(c, _)| match proxy_filter {
-            Some(ip) => c.is_proxy() == Some(ip),
-            None => c.is_proxy().is_some(),
-        })
+        .filter(|(c, _)| proxy_filter.matches(c))
         .count();
 
     let chain = reg.dependency_chain(name.to_string(), services);
@@ -161,7 +194,7 @@ async fn teardown_chain(
 
         let Some(client_ip) = client_ip else { continue };
         if let Some(ServiceInfo::Registered(reg)) = services.get_mut(server.name()) {
-            reg.remove_chains(net, client_ip, &client, num_proxy_clients, orchestrator)
+            reg.remove_chains(client_ip, &client, num_proxy_clients, orchestrator)
                 .await;
         }
     }
@@ -173,7 +206,7 @@ async fn teardown_chain(
             .iter()
             .filter_map(|(c, ci)| {
                 let pip = c.is_proxy()?;
-                if proxy_filter.is_none() || proxy_filter == Some(pip) {
+                if proxy_filter.matches(c) {
                     Some((c.clone(), ci.net_id(), pip))
                 } else {
                     None
@@ -183,7 +216,7 @@ async fn teardown_chain(
 
         for (_, net_id, proxy_ip) in &proxy_teardowns {
             for dest in [service_ip, *proxy_ip] {
-                orchestrator.send_net_teardown(net, dest, *net_id).await;
+                orchestrator.send_net_teardown(dest, *net_id).await;
             }
         }
 
@@ -196,7 +229,6 @@ async fn teardown_chain(
 // --- Main apply function ---
 
 pub(crate) async fn apply_changes(
-    net: Net,
     changes: Vec<ServiceChange>,
     services: &mut HashMap<String, ServiceInfo>,
     loaded_services: Option<&HashMap<String, ServiceInfo>>,
@@ -205,17 +237,17 @@ pub(crate) async fn apply_changes(
     for change in changes {
         match change {
             ServiceChange::Removed { name } => {
-                teardown_invalidated_service(net, &name, true, services, orchestrator).await;
+                teardown_invalidated_service(&name, true, services, orchestrator).await;
                 services.remove(&name);
             }
             ServiceChange::DepsChanged { name } => {
-                teardown_invalidated_service(net, &name, false, services, orchestrator).await;
+                teardown_invalidated_service(&name, false, services, orchestrator).await;
             }
             ServiceChange::ReachabilityChanged { name } => {
-                teardown_chain(net, &name, services, orchestrator, None).await;
+                teardown_chain(&name, services, orchestrator, ProxyFilter::All).await;
             }
             ServiceChange::Unregistered { name } => {
-                teardown_invalidated_service(net, &name, true, services, orchestrator).await;
+                teardown_invalidated_service(&name, true, services, orchestrator).await;
             }
             ServiceChange::ProxyDisconnected { ip } => {
                 let proxy_services: Vec<String> = services
@@ -230,8 +262,21 @@ pub(crate) async fn apply_changes(
                     .map(|(name, _)| name.clone())
                     .collect();
                 for name in proxy_services {
-                    teardown_chain(net, &name, services, orchestrator, Some(ip)).await;
+                    teardown_chain(&name, services, orchestrator, ProxyFilter::ByIp(ip)).await;
                 }
+            }
+            ServiceChange::ProxyClientTimedOut { name, client } => {
+                println!(
+                    "Proxy client '{}' timed out on service '{name}'",
+                    client.display_name()
+                );
+                teardown_chain(
+                    &name,
+                    services,
+                    orchestrator,
+                    ProxyFilter::ByClient(&client),
+                )
+                .await;
             }
         }
     }

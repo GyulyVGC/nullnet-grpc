@@ -1,5 +1,5 @@
+use crate::constants::TIMEOUT;
 use crate::orchestrator::Orchestrator;
-use crate::proto::nullnet_grpc::Net;
 use crate::services::changes::{apply_changes, detect_config_changes};
 use crate::services::service_info::ServiceInfo;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -10,8 +10,8 @@ use std::ops::Sub;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc as tokio_mpsc;
+use tokio::sync::{Notify, RwLock};
 use tokio::time::Instant;
 
 const SERVICES_PATH: &str = "./services/services.toml";
@@ -38,9 +38,9 @@ impl ServicesToml {
     }
 
     pub(crate) async fn watch(
-        net: Net,
         services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
         orchestrator: Orchestrator,
+        config_changed: Arc<Notify>,
     ) -> Result<(), Error> {
         let mut services_directory = PathBuf::from(SERVICES_PATH);
         services_directory.pop();
@@ -76,8 +76,8 @@ impl ServicesToml {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     if let Ok(loaded_services) = ServicesToml::load().await {
                         let services_mut = &mut *services.write().await;
-                        apply_config_update(net, services_mut, loaded_services, &orchestrator)
-                            .await;
+                        apply_config_update(services_mut, loaded_services, &orchestrator).await;
+                        config_changed.notify_one();
                     }
                     last_update_time = Instant::now();
                 }
@@ -101,12 +101,15 @@ impl ServicesToml {
                     .skip(1)
                     .cloned()
                     .collect();
-                ret_val.insert(d.clone(), ServiceInfo::new(d_deps, false));
+                ret_val.insert(d.clone(), ServiceInfo::new(d_deps, None));
             }
         }
 
         for s in self.services {
-            ret_val.insert(s.name, ServiceInfo::new(s.dependencies, true));
+            ret_val.insert(
+                s.name,
+                ServiceInfo::new(s.dependencies, Some(s.timeout.unwrap_or(*TIMEOUT))),
+            );
         }
 
         ret_val
@@ -114,17 +117,20 @@ impl ServicesToml {
 }
 
 pub(crate) async fn apply_config_update(
-    net: Net,
     services: &mut HashMap<String, ServiceInfo>,
     loaded_services: HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
 ) {
     let changes = detect_config_changes(services, &loaded_services);
-    apply_changes(net, changes, services, Some(&loaded_services), orchestrator).await;
+    apply_changes(changes, services, Some(&loaded_services), orchestrator).await;
 }
 
 #[derive(Deserialize)]
 struct ServiceToml {
     name: String,
+    /// Per-service proxy client timeout in seconds.
+    /// If omitted, defaults to the global `TIMEOUT` env var (or 60s).
+    /// A value of 0 disables the timeout (proxy clients never expire).
+    timeout: Option<u64>,
     dependencies: Vec<String>,
 }

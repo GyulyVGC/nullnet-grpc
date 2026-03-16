@@ -2,9 +2,9 @@
 
 use crate::graphviz::render_graphviz;
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
-use crate::proto::nullnet_grpc::Net;
 use crate::services::input::{ServicesToml, apply_config_update};
 use crate::services::service_info::ServiceInfo;
+use crate::timeout::apply_proxy_timeouts;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -67,7 +67,7 @@ async fn register_services(server: &NullnetGrpcImpl, ip_map: &HashMap<&str, IpAd
 }
 
 fn assert_graphviz(services: &HashMap<String, ServiceInfo>, fixture: &str, expected_file: &str) {
-    let actual = render_graphviz(services, Net::default());
+    let actual = render_graphviz(services);
     let expected_path = fixture_path(fixture, expected_file);
 
     println!("--- {expected_file} ---\n{actual}");
@@ -138,13 +138,7 @@ async fn service_removed_remove_A() {
     let new_config = load_config(SERVICE_REMOVED, "remove_A.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(
-        Net::default(),
-        &mut guard,
-        new_config,
-        server.orchestrator(),
-    )
-    .await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_A.dot");
 
     assert!(!guard.contains_key("A"));
@@ -160,13 +154,7 @@ async fn service_removed_remove_B() {
     let new_config = load_config(SERVICE_REMOVED, "remove_B.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(
-        Net::default(),
-        &mut guard,
-        new_config,
-        server.orchestrator(),
-    )
-    .await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_B.dot");
 
     assert!(!guard.contains_key("B"));
@@ -216,13 +204,7 @@ async fn dep_changed_add_E_to_A() {
     let new_config = load_config(DEP_CHANGED, "add_E_to_A.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(
-        Net::default(),
-        &mut guard,
-        new_config,
-        server.orchestrator(),
-    )
-    .await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, DEP_CHANGED, "after_add_E_to_A.dot");
 
     assert_eq!(
@@ -241,13 +223,7 @@ async fn dep_changed_drop_C_from_A() {
     let new_config = load_config(DEP_CHANGED, "drop_C_from_A.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(
-        Net::default(),
-        &mut guard,
-        new_config,
-        server.orchestrator(),
-    )
-    .await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_C_from_A.dot");
 
     assert!(guard.contains_key("A"));
@@ -263,13 +239,7 @@ async fn dep_changed_drop_all_from_D() {
     let new_config = load_config(DEP_CHANGED, "drop_all_from_D.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(
-        Net::default(),
-        &mut guard,
-        new_config,
-        server.orchestrator(),
-    )
-    .await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_all_from_D.dot");
 
     assert!(guard["D"].dependencies().is_empty());
@@ -284,13 +254,7 @@ async fn dep_changed_swap_C_for_E() {
     let new_config = load_config(DEP_CHANGED, "swap_C_for_E.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(
-        Net::default(),
-        &mut guard,
-        new_config,
-        server.orchestrator(),
-    )
-    .await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, DEP_CHANGED, "after_swap_C_for_E.dot");
 
     assert_eq!(
@@ -345,17 +309,11 @@ async fn reachability_changed_unreachable_B() {
     let new_config = load_config(REACHABILITY_CHANGED, "unreachable_B.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(
-        Net::default(),
-        &mut guard,
-        new_config,
-        server.orchestrator(),
-    )
-    .await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_B.dot");
 
     assert!(guard.contains_key("B"));
-    assert!(!guard["B"].is_proxy_reachable());
+    assert!(guard["B"].is_proxy_reachable().is_none());
 }
 
 /// D removed from [[services]] and no other service depends on it, so D and E
@@ -367,13 +325,7 @@ async fn reachability_changed_unreachable_D() {
     let new_config = load_config(REACHABILITY_CHANGED, "unreachable_D.toml").await;
 
     let mut guard = server.services().write().await;
-    apply_config_update(
-        Net::default(),
-        &mut guard,
-        new_config,
-        server.orchestrator(),
-    )
-    .await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_D.dot");
 
     assert!(!guard.contains_key("D"));
@@ -529,7 +481,7 @@ async fn node_disconnected_A_B() {
 
     server
         .orchestrator()
-        .handle_node_disconnect(Net::default(), ip(1, 1, 1, 1), server.services())
+        .handle_node_disconnect(ip(1, 1, 1, 1), server.services())
         .await;
 
     let guard = server.services().read().await;
@@ -547,7 +499,7 @@ async fn node_disconnected_C() {
 
     server
         .orchestrator()
-        .handle_node_disconnect(Net::default(), ip(2, 2, 2, 2), server.services())
+        .handle_node_disconnect(ip(2, 2, 2, 2), server.services())
         .await;
 
     let guard = server.services().read().await;
@@ -564,7 +516,7 @@ async fn node_disconnected_D() {
 
     server
         .orchestrator()
-        .handle_node_disconnect(Net::default(), ip(3, 3, 3, 3), server.services())
+        .handle_node_disconnect(ip(3, 3, 3, 3), server.services())
         .await;
 
     let guard = server.services().read().await;
@@ -581,7 +533,7 @@ async fn node_disconnected_proxy1() {
 
     server
         .orchestrator()
-        .handle_node_disconnect(Net::default(), ip(5, 5, 5, 5), server.services())
+        .handle_node_disconnect(ip(5, 5, 5, 5), server.services())
         .await;
 
     let guard = server.services().read().await;
@@ -591,4 +543,164 @@ async fn node_disconnected_proxy1() {
     assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
     assert!(matches!(guard["C"], ServiceInfo::Registered(_)));
     assert!(matches!(guard["D"], ServiceInfo::Registered(_)));
+}
+
+// ===========================================================================
+// proxy_timeout: A→C→D, B→D (D shared). proxy1→A+B, proxy2→A.
+// A has timeout=1, B has timeout=2.
+// ===========================================================================
+
+const PROXY_TIMEOUT: &str = "proxy_timeout";
+
+async fn proxy_timeout_setup() -> NullnetGrpcImpl {
+    let services = load_fixture(PROXY_TIMEOUT).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([
+        ("A", ip(1, 1, 1, 1)),
+        ("B", ip(2, 2, 2, 2)),
+        ("C", ip(3, 3, 3, 3)),
+        ("D", ip(4, 4, 4, 4)),
+    ]);
+    let proxy1 = ip(5, 5, 5, 5);
+    let proxy2 = ip(6, 6, 6, 6);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy1).await;
+    server.orchestrator().register_fake_client(proxy2).await;
+
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+    setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
+    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
+
+    let guard = server.services().read().await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "start.dot");
+    drop(guard);
+
+    server
+}
+
+/// After A's timeout (1s), both proxy clients on A expire. B's proxy client
+/// survives (timeout=2). A→C→D edges removed (no more proxy clients on A).
+/// B→D edge survives.
+#[tokio::test]
+async fn proxy_timeout_A() {
+    let server = proxy_timeout_setup().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    let mut guard = server.services().write().await;
+    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
+
+    // A is still registered but has no proxy clients
+    assert!(matches!(guard["A"], ServiceInfo::Registered(_)));
+    // B's proxy client is still alive
+    assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
+    if let ServiceInfo::Registered(reg) = &guard["B"] {
+        assert_eq!(reg.clients().len(), 1);
+    }
+    if let ServiceInfo::Registered(reg) = &guard["A"] {
+        assert!(reg.clients().is_empty());
+    }
+}
+
+/// After B's timeout (2s), B's proxy client also expires.
+/// All proxy chains gone; all services still registered.
+#[tokio::test]
+async fn proxy_timeout_A_then_B() {
+    let server = proxy_timeout_setup().await;
+
+    // A expires after 1s
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
+    drop(guard);
+
+    // B expires after 2s total
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A_then_B.dot");
+
+    // all services still registered, but no proxy clients left
+    for (_, si) in guard.iter() {
+        if let ServiceInfo::Registered(reg) = si {
+            assert!(
+                reg.clients().is_empty(),
+                "expected no proxy clients after both timeouts"
+            );
+        }
+    }
+}
+
+/// After 2s+ both A and B expire simultaneously in a single apply.
+#[tokio::test]
+async fn proxy_timeout_all_at_once() {
+    let server = proxy_timeout_setup().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+
+    let mut guard = server.services().write().await;
+    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_all.dot");
+
+    for (_, si) in guard.iter() {
+        if let ServiceInfo::Registered(reg) = si {
+            assert!(
+                reg.clients().is_empty(),
+                "expected no proxy clients after full timeout"
+            );
+        }
+    }
+}
+
+/// Config update tightens B's timeout from 2→1. After 1.5s, B's clients
+/// are past the new limit and get expired by the config change.
+/// A's timeout is unchanged in the config, so the config path doesn't
+/// touch A's clients (even though they're past A's own timeout).
+#[tokio::test]
+async fn proxy_timeout_config_tighten_B() {
+    let server = proxy_timeout_setup().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+    let new_config = load_config(PROXY_TIMEOUT, "tighten_B.toml").await;
+    let mut guard = server.services().write().await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_config_tighten_B.dot");
+
+    // B's proxy client expired due to config tightening
+    if let ServiceInfo::Registered(reg) = &guard["B"] {
+        assert!(reg.clients().is_empty());
+    }
+    // A's clients are still present (config path only handles config changes)
+    if let ServiceInfo::Registered(reg) = &guard["A"] {
+        assert_eq!(reg.clients().len(), 2);
+    }
+}
+
+/// Config update removes A's timeout (1→0). Even after 1.5s, A's clients
+/// are NOT expired because the timeout was removed, not tightened.
+/// B's timeout is unchanged, so B's client also stays.
+#[tokio::test]
+async fn proxy_timeout_config_remove_timeout_A() {
+    let server = proxy_timeout_setup().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+    let new_config = load_config(PROXY_TIMEOUT, "remove_timeout_A.toml").await;
+    let mut guard = server.services().write().await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_config_remove_timeout_A.dot");
+
+    // A's timeout was removed — no expiry, clients still present
+    assert_eq!(guard["A"].is_proxy_reachable(), Some(0));
+    if let ServiceInfo::Registered(reg) = &guard["A"] {
+        assert_eq!(reg.clients().len(), 2);
+    }
+    // B unchanged
+    if let ServiceInfo::Registered(reg) = &guard["B"] {
+        assert_eq!(reg.clients().len(), 1);
+    }
 }

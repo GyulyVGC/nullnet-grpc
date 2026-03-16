@@ -1,4 +1,5 @@
-use crate::proto::nullnet_grpc::{MsgId, Net, NetMessage};
+use crate::constants::NET_TYPE;
+use crate::proto::nullnet_grpc::{MsgId, NetMessage};
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -28,7 +29,6 @@ impl Orchestrator {
 
     pub(crate) async fn add_client(
         &self,
-        net: Net,
         request: Request<Streaming<MsgId>>,
         outbound: OutboundStream,
         services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
@@ -52,7 +52,7 @@ impl Orchestrator {
 
             println!("Control channel from '{client_ip}' closed");
             orchestrator
-                .handle_node_disconnect(net, client_ip, &services)
+                .handle_node_disconnect(client_ip, &services)
                 .await;
         });
 
@@ -65,7 +65,6 @@ impl Orchestrator {
 
     pub(crate) async fn handle_node_disconnect(
         &self,
-        net: Net,
         client_ip: IpAddr,
         services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
     ) {
@@ -73,12 +72,11 @@ impl Orchestrator {
 
         let mut services_guard = services.write().await;
         let changes = detect_node_disconnect_changes(&services_guard, client_ip);
-        apply_changes(net, changes, &mut services_guard, None, self).await;
+        apply_changes(changes, &mut services_guard, None, self).await;
     }
 
     pub(crate) async fn send_net_setup(
         &self,
-        net: Net,
         dest: IpAddr,
         remote_server_name: Option<String>,
         net_id: u32,
@@ -91,7 +89,7 @@ impl Orchestrator {
             self.pending.lock().await.insert(msg_id.clone(), tx);
 
             let (server_net, message) =
-                net.setup(msg_id.clone(), dest, remote_server_name, net_id, remote)?;
+                NET_TYPE.setup(msg_id.clone(), dest, remote_server_name, net_id, remote)?;
 
             if outbound.send(Ok(message)).await.is_err() {
                 self.pending.lock().await.remove(&msg_id);
@@ -109,12 +107,12 @@ impl Orchestrator {
         }
     }
 
-    pub(crate) async fn send_net_teardown(&self, net: Net, dest: IpAddr, net_id: u32) {
+    pub(crate) async fn send_net_teardown(&self, dest: IpAddr, net_id: u32) {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
             println!("Sending network {net_id} teardown to client {dest}");
 
-            let message = net.teardown(net_id);
+            let message = NET_TYPE.teardown(net_id);
 
             let _ = outbound.send(Ok(message)).await.handle_err(location!());
         }
@@ -133,12 +131,20 @@ impl Orchestrator {
         tokio::spawn(async move {
             while let Some(Ok(msg)) = rx.recv().await {
                 // auto-ack NetSetup messages
-                if let Some(net_message::Message::VlanSetup(setup)) = msg.message {
-                    if let Some(msg_id) = setup.msg_id {
-                        if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
-                            let _ = tx.send(());
+                match msg.message {
+                    Some(net_message::Message::VlanSetup(
+                        crate::proto::nullnet_grpc::VlanSetup { msg_id, .. },
+                    ))
+                    | Some(net_message::Message::VxlanSetup(
+                        crate::proto::nullnet_grpc::VxlanSetup { msg_id, .. },
+                    )) => {
+                        if let Some(msg_id) = msg_id {
+                            if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
+                                let _ = tx.send(());
+                            }
                         }
                     }
+                    _ => {}
                 }
             }
         });

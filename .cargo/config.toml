@@ -1,2 +1,3 @@
 [env]
 NET_TYPE="VLAN"
+TIMEOUT="60"

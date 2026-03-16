@@ -1,9 +1,10 @@
 use crate::orchestrator::Orchestrator;
-use crate::proto::nullnet_grpc::{Net, Upstream};
+use crate::proto::nullnet_grpc::Upstream;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::edge::Edge;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub(crate) enum ServiceInfo {
@@ -12,7 +13,7 @@ pub(crate) enum ServiceInfo {
 }
 
 impl ServiceInfo {
-    pub(crate) fn new(dependencies: Vec<String>, is_proxy_reachable: bool) -> Self {
+    pub(crate) fn new(dependencies: Vec<String>, is_proxy_reachable: Option<u64>) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
             dependencies,
             is_proxy_reachable,
@@ -42,7 +43,7 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn is_proxy_reachable(&self) -> bool {
+    pub(crate) fn is_proxy_reachable(&self) -> Option<u64> {
         match self {
             ServiceInfo::Unregistered(unreg) => unreg.is_proxy_reachable,
             ServiceInfo::Registered(reg) => reg.is_proxy_reachable,
@@ -81,12 +82,14 @@ impl ServiceInfo {
 
 #[derive(Clone, Debug)]
 pub(crate) struct UnregisteredServiceInfo {
+    /// Dependencies of the service.
     dependencies: Vec<String>,
-    is_proxy_reachable: bool,
+    /// Whether the proxy is reachable for this service, with the associated timeout.
+    is_proxy_reachable: Option<u64>,
 }
 
 impl UnregisteredServiceInfo {
-    fn new(dependencies: Vec<String>, is_proxy_reachable: bool) -> Self {
+    fn new(dependencies: Vec<String>, is_proxy_reachable: Option<u64>) -> Self {
         Self {
             dependencies,
             is_proxy_reachable,
@@ -98,7 +101,8 @@ impl UnregisteredServiceInfo {
 pub(crate) struct RegisteredServiceInfo {
     /// Dependencies of the service.
     dependencies: Vec<String>,
-    is_proxy_reachable: bool,
+    /// Whether the proxy is reachable for this service, with the associated timeout.
+    is_proxy_reachable: Option<u64>,
     /// IP address of the host.
     ip: IpAddr,
     /// Port of the service.
@@ -140,9 +144,14 @@ impl RegisteredServiceInfo {
         }
     }
 
+    pub(crate) fn set_latest_now(&mut self, client: &Client) {
+        if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
+            client_info.set_latest_now();
+        }
+    }
+
     pub(crate) async fn remove_chains(
         &mut self,
-        net: Net,
         client_ip: IpAddr,
         client: &Client,
         num_chains: usize,
@@ -163,7 +172,7 @@ impl RegisteredServiceInfo {
             self.clients_mut().remove(client);
 
             for dest in [self.ip, client_ip] {
-                orchestrator.send_net_teardown(net, dest, net_id).await;
+                orchestrator.send_net_teardown(dest, net_id).await;
             }
         }
     }
@@ -195,5 +204,25 @@ impl RegisteredServiceInfo {
 
     pub(crate) fn dependencies(&self) -> &Vec<String> {
         &self.dependencies
+    }
+
+    pub(crate) fn expired_proxy_clients(&self, timeout: Duration) -> Vec<Client> {
+        let now = Instant::now();
+        self.clients
+            .clients()
+            .iter()
+            .filter(|(c, ci)| c.is_proxy().is_some() && now.duration_since(ci.latest()) >= timeout)
+            .map(|(c, _)| c.clone())
+            .collect()
+    }
+
+    pub(crate) fn nearest_proxy_expiry(&self, timeout: Duration) -> Option<Duration> {
+        let now = Instant::now();
+        self.clients
+            .clients()
+            .iter()
+            .filter(|(c, _)| c.is_proxy().is_some())
+            .map(|(_, ci)| timeout.saturating_sub(now.duration_since(ci.latest())))
+            .min()
     }
 }
