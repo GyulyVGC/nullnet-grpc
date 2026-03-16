@@ -654,3 +654,53 @@ async fn proxy_timeout_all_at_once() {
         }
     }
 }
+
+/// Config update tightens B's timeout from 2→1. After 1.5s, B's clients
+/// are past the new limit and get expired by the config change.
+/// A's timeout is unchanged in the config, so the config path doesn't
+/// touch A's clients (even though they're past A's own timeout).
+#[tokio::test]
+async fn proxy_timeout_config_tighten_B() {
+    let server = proxy_timeout_setup().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+    let new_config = load_config(PROXY_TIMEOUT, "tighten_B.toml").await;
+    let mut guard = server.services().write().await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_config_tighten_B.dot");
+
+    // B's proxy client expired due to config tightening
+    if let ServiceInfo::Registered(reg) = &guard["B"] {
+        assert!(reg.clients().is_empty());
+    }
+    // A's clients are still present (config path only handles config changes)
+    if let ServiceInfo::Registered(reg) = &guard["A"] {
+        assert_eq!(reg.clients().len(), 2);
+    }
+}
+
+/// Config update removes A's timeout (1→0). Even after 1.5s, A's clients
+/// are NOT expired because the timeout was removed, not tightened.
+/// B's timeout is unchanged, so B's client also stays.
+#[tokio::test]
+async fn proxy_timeout_config_remove_timeout_A() {
+    let server = proxy_timeout_setup().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+    let new_config = load_config(PROXY_TIMEOUT, "remove_timeout_A.toml").await;
+    let mut guard = server.services().write().await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    assert_graphviz(&guard, PROXY_TIMEOUT, "after_config_remove_timeout_A.dot");
+
+    // A's timeout was removed — no expiry, clients still present
+    assert_eq!(guard["A"].is_proxy_reachable(), Some(0));
+    if let ServiceInfo::Registered(reg) = &guard["A"] {
+        assert_eq!(reg.clients().len(), 2);
+    }
+    // B unchanged
+    if let ServiceInfo::Registered(reg) = &guard["B"] {
+        assert_eq!(reg.clients().len(), 1);
+    }
+}

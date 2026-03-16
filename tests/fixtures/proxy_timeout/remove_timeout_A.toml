@@ -1,0 +1,9 @@
+[[services]]
+name = "A"
+timeout = 0
+dependencies = ["C", "D"]
+
+[[services]]
+name = "B"
+timeout = 2
+dependencies = ["D"]
