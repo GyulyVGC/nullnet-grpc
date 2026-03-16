@@ -131,12 +131,20 @@ impl Orchestrator {
         tokio::spawn(async move {
             while let Some(Ok(msg)) = rx.recv().await {
                 // auto-ack NetSetup messages
-                if let Some(net_message::Message::VlanSetup(setup)) = msg.message {
-                    if let Some(msg_id) = setup.msg_id {
-                        if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
-                            let _ = tx.send(());
+                match msg.message {
+                    Some(net_message::Message::VlanSetup(
+                        crate::proto::nullnet_grpc::VlanSetup { msg_id, .. },
+                    ))
+                    | Some(net_message::Message::VxlanSetup(
+                        crate::proto::nullnet_grpc::VxlanSetup { msg_id, .. },
+                    )) => {
+                        if let Some(msg_id) = msg_id {
+                            if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
+                                let _ = tx.send(());
+                            }
                         }
                     }
+                    _ => {}
                 }
             }
         });
