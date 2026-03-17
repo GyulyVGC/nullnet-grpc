@@ -55,7 +55,7 @@ async fn register_services(server: &NullnetGrpcImpl, ip_map: &HashMap<&str, IpAd
     let mut services = server.services().write().await;
     for (&name, &svc_ip) in ip_map {
         if let Some(si) = services.get_mut(name) {
-            si.register(svc_ip, port);
+            si.register(svc_ip, port, None);
         }
     }
     drop(services);
@@ -374,7 +374,7 @@ async fn service_unregistered_drop_A() {
     let server = service_unregistered_setup().await;
 
     server
-        .apply_services_list(ip(1, 1, 1, 1), &[("B".into(), 8080)])
+        .apply_services_list(ip(1, 1, 1, 1), &[("B".into(), 8080, None)])
         .await
         .expect("apply_services_list failed");
 
@@ -392,7 +392,7 @@ async fn service_unregistered_drop_B() {
     let server = service_unregistered_setup().await;
 
     server
-        .apply_services_list(ip(1, 1, 1, 1), &[("A".into(), 8080)])
+        .apply_services_list(ip(1, 1, 1, 1), &[("A".into(), 8080, None)])
         .await
         .expect("apply_services_list failed");
 

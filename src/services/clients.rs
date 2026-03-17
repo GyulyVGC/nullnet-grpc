@@ -54,7 +54,7 @@ impl Client {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ClientInfo {
     client_net: Ipv4Addr,
     server_net: Ipv4Addr,
@@ -62,6 +62,7 @@ pub(crate) struct ClientInfo {
     time_ms: u128,
     active_chains: usize,
     latest: Instant,
+    docker_container: Option<String>,
 }
 
 impl ClientInfo {
@@ -70,6 +71,7 @@ impl ClientInfo {
         server_net: Ipv4Addr,
         net_id: u32,
         time_ms: u128,
+        docker_container: Option<String>,
     ) -> Self {
         Self {
             client_net,
@@ -78,6 +80,7 @@ impl ClientInfo {
             time_ms,
             active_chains: 0,
             latest: Instant::now(),
+            docker_container,
         }
     }
 
@@ -89,7 +92,12 @@ impl ClientInfo {
             time_ms: 0,
             active_chains: 0,
             latest: Instant::now(),
+            docker_container: None,
         }
+    }
+
+    pub(crate) fn docker_container(&self) -> Option<&String> {
+        self.docker_container.as_ref()
     }
 
     pub(crate) fn client_net(&self) -> Ipv4Addr {

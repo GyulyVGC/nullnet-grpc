@@ -20,7 +20,7 @@ impl ServiceInfo {
         ))
     }
 
-    pub(crate) fn register(&mut self, ip: IpAddr, port: u16) {
+    pub(crate) fn register(&mut self, ip: IpAddr, port: u16, docker_container: Option<String>) {
         let is_proxy_reachable = self.is_proxy_reachable();
         let dependencies = self.dependencies();
         let clients = self.clients();
@@ -30,6 +30,7 @@ impl ServiceInfo {
             is_proxy_reachable,
             ip,
             port,
+            docker_container,
             clients,
         });
     }
@@ -107,6 +108,8 @@ pub(crate) struct RegisteredServiceInfo {
     ip: IpAddr,
     /// Port of the service.
     port: u16,
+    /// Docker container name (if running inside a container).
+    docker_container: Option<String>,
     /// Clients connected to this node.
     clients: Clients,
 }
@@ -160,7 +163,10 @@ impl RegisteredServiceInfo {
         let net_to_remove = if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
             client_info.remove_active_chains(num_chains);
             if client_info.active_chains() == 0 {
-                Some(client_info.net_id())
+                Some((
+                    client_info.net_id(),
+                    client_info.docker_container().cloned(),
+                ))
             } else {
                 None
             }
@@ -168,17 +174,24 @@ impl RegisteredServiceInfo {
             None
         };
 
-        if let Some(net_id) = net_to_remove {
+        if let Some((net_id, client_docker)) = net_to_remove {
             self.clients_mut().remove(client);
 
-            for dest in [self.ip, client_ip] {
-                orchestrator.send_net_teardown(dest, net_id).await;
-            }
+            orchestrator
+                .send_net_teardown(self.ip, net_id, self.docker_container.clone())
+                .await;
+            orchestrator
+                .send_net_teardown(client_ip, net_id, client_docker)
+                .await;
         }
     }
 
     pub(crate) fn ip_port(&self) -> (IpAddr, u16) {
         (self.ip, self.port)
+    }
+
+    pub(crate) fn docker_container(&self) -> Option<&str> {
+        self.docker_container.as_deref()
     }
 
     pub(crate) fn add_client(&mut self, client: Client, client_info: ClientInfo) {

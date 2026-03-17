@@ -155,10 +155,16 @@ impl NullnetGrpcImpl {
             sender_ip, req.services
         );
 
-        let service_list: Vec<(String, u16)> = req
+        let service_list: Vec<(String, u16, Option<String>)> = req
             .services
             .into_iter()
-            .map(|s| Ok((s.name, u16::try_from(s.port).handle_err(location!())?)))
+            .map(|s| {
+                Ok((
+                    s.name,
+                    u16::try_from(s.port).handle_err(location!())?,
+                    s.docker_container,
+                ))
+            })
             .collect::<Result<_, Error>>()?;
 
         self.apply_services_list(sender_ip, &service_list).await?;
@@ -208,7 +214,7 @@ impl NullnetGrpcImpl {
     pub(crate) async fn apply_services_list(
         &self,
         sender_ip: IpAddr,
-        service_list: &[(String, u16)],
+        service_list: &[(String, u16, Option<String>)],
     ) -> Result<(), Error> {
         let mut services_mut = self.services.write().await;
 
@@ -216,9 +222,9 @@ impl NullnetGrpcImpl {
         apply_changes(changes, &mut services_mut, None, &self.orchestrator).await;
 
         // re-register services that are still present
-        for (name, port) in service_list {
+        for (name, port, docker_container) in service_list {
             services_mut.entry(name.clone()).and_modify(|si| {
-                si.register(sender_ip, *port);
+                si.register(sender_ip, *port, docker_container.clone());
             });
         }
 
@@ -252,6 +258,18 @@ impl NullnetGrpcImpl {
                 }
                 // reserve the slot so concurrent requests see it as in-progress
                 reg.add_client(client.clone(), ClientInfo::placeholder());
+
+                // look up docker_container for the server side
+                let server_docker = reg.docker_container().map(String::from);
+
+                // look up docker_container for the client side
+                let client_docker = services_guard.get(client.name()).and_then(|si| {
+                    if let ServiceInfo::Registered(r) = si {
+                        r.docker_container().map(String::from)
+                    } else {
+                        None
+                    }
+                });
                 drop(services_guard);
 
                 // TODO: check for NET ID overflow (max 65535) and reclaim freed IDs
@@ -261,14 +279,17 @@ impl NullnetGrpcImpl {
                 drop(last_id);
 
                 let orch = orchestrator.clone();
+                let sd = server_docker.clone();
                 let server_res =
-                    orch.send_net_setup(server_ethernet, None, net_id, client_ethernet);
+                    orch.send_net_setup(server_ethernet, None, net_id, client_ethernet, sd);
                 let orch2 = orchestrator.clone();
+                let cd = client_docker.clone();
                 let client_res = orch2.send_net_setup(
                     client_ethernet,
                     Some(server.name().to_string()),
                     net_id,
                     server_ethernet,
+                    cd,
                 );
 
                 let (server_ok, client_ok) = tokio::join!(server_res, client_res);
@@ -276,13 +297,13 @@ impl NullnetGrpcImpl {
                 if server_ok.is_none() || client_ok.is_none() {
                     // rollback: teardown whichever side succeeded
                     if server_ok.is_some() {
-                        let () = orchestrator
-                            .send_net_teardown(server_ethernet, net_id)
+                        orchestrator
+                            .send_net_teardown(server_ethernet, net_id, server_docker.clone())
                             .await;
                     }
                     if client_ok.is_some() {
                         orchestrator
-                            .send_net_teardown(client_ethernet, net_id)
+                            .send_net_teardown(client_ethernet, net_id, client_docker.clone())
                             .await;
                     }
                     // remove placeholder
@@ -304,17 +325,23 @@ impl NullnetGrpcImpl {
                 let mut guard = services.write().await;
                 if let Some(ServiceInfo::Registered(reg)) = guard.get_mut(server.name()) {
                     let time_ms = init_time.elapsed().as_millis();
-                    let ci = ClientInfo::new(net_ip_client, net_ip_server, net_id, time_ms);
+                    let ci = ClientInfo::new(
+                        net_ip_client,
+                        net_ip_server,
+                        net_id,
+                        time_ms,
+                        client_docker,
+                    );
                     reg.add_client(client.clone(), ci);
                     reg.add_chain(&client);
                 } else {
                     // service was unregistered during setup — teardown NETs
                     drop(guard);
                     orchestrator
-                        .send_net_teardown(server_ethernet, net_id)
+                        .send_net_teardown(server_ethernet, net_id, server_docker)
                         .await;
                     orchestrator
-                        .send_net_teardown(client_ethernet, net_id)
+                        .send_net_teardown(client_ethernet, net_id, client_docker)
                         .await;
                 }
 

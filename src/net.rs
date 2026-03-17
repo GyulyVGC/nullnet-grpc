@@ -14,14 +14,22 @@ impl Net {
         remote_server_name: Option<String>,
         net_id: u32,
         remote: IpAddr,
+        docker_container: Option<String>,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         match self {
             Net::Vlan => Self::vlan_setup(msg_id, dest, remote_server_name, net_id, remote),
-            Net::Vxlan => Self::vxlan_setup(msg_id, dest, remote_server_name, net_id, remote),
+            Net::Vxlan => Self::vxlan_setup(
+                msg_id,
+                dest,
+                remote_server_name,
+                net_id,
+                remote,
+                docker_container,
+            ),
         }
     }
 
-    pub(crate) fn teardown(self, net_id: u32) -> NetMessage {
+    pub(crate) fn teardown(self, net_id: u32, docker_container: Option<String>) -> NetMessage {
         match self {
             Net::Vlan => NetMessage {
                 message: Some(net_message::Message::VlanTeardown(VlanTeardown {
@@ -31,6 +39,7 @@ impl Net {
             Net::Vxlan => NetMessage {
                 message: Some(net_message::Message::VxlanTeardown(VxlanTeardown {
                     vxlan_id: net_id,
+                    docker_container,
                 })),
             },
         }
@@ -84,6 +93,7 @@ impl Net {
         remote_server_name: Option<String>,
         vxlan_id: u32,
         remote: IpAddr,
+        docker_container: Option<String>,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         let [_, _, a, b] = vxlan_id.to_be_bytes();
 
@@ -126,6 +136,7 @@ impl Net {
                     local_ip: dest.to_string(),
                     remote_ip: remote.to_string(),
                     host_mapping,
+                    docker_container,
                 })),
             },
         ))

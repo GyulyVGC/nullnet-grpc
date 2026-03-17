@@ -85,14 +85,14 @@ pub(crate) fn detect_config_changes(
 pub(crate) fn detect_services_list_changes(
     current: &HashMap<String, ServiceInfo>,
     sender_ip: IpAddr,
-    service_list: &[(String, u16)],
+    service_list: &[(String, u16, Option<String>)],
 ) -> Vec<ServiceChange> {
     current
         .iter()
         .filter_map(|(name, si)| {
             if let ServiceInfo::Registered(reg) = si
                 && reg.ip_port().0 == sender_ip
-                && !service_list.iter().any(|(s, _)| s == name)
+                && !service_list.iter().any(|(s, _, _)| s == name)
             {
                 return Some(ServiceChange::Unregistered { name: name.clone() });
             }
@@ -201,26 +201,30 @@ async fn teardown_chain(
 
     if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
         let service_ip = reg.ip_port().0;
+        let service_docker = reg.docker_container().map(String::from);
         let proxy_teardowns: Vec<_> = reg
             .clients()
             .iter()
             .filter_map(|(c, ci)| {
                 let pip = c.is_proxy()?;
                 if proxy_filter.matches(c) {
-                    Some((c.clone(), ci.net_id(), pip))
+                    Some((c.clone(), ci.net_id(), pip, ci.docker_container().cloned()))
                 } else {
                     None
                 }
             })
             .collect();
 
-        for (_, net_id, proxy_ip) in &proxy_teardowns {
-            for dest in [service_ip, *proxy_ip] {
-                orchestrator.send_net_teardown(dest, *net_id).await;
-            }
+        for (_, net_id, proxy_ip, client_docker) in &proxy_teardowns {
+            orchestrator
+                .send_net_teardown(service_ip, *net_id, service_docker.clone())
+                .await;
+            orchestrator
+                .send_net_teardown(*proxy_ip, *net_id, client_docker.clone())
+                .await;
         }
 
-        for (client, _, _) in proxy_teardowns {
+        for (client, _, _, _) in proxy_teardowns {
             reg.clients_mut().remove(&client);
         }
     }

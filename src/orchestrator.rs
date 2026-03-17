@@ -81,6 +81,7 @@ impl Orchestrator {
         remote_server_name: Option<String>,
         net_id: u32,
         remote: IpAddr,
+        docker_container: Option<String>,
     ) -> Option<Ipv4Addr> {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
@@ -88,8 +89,14 @@ impl Orchestrator {
             let msg_id = Uuid::new_v4().to_string();
             self.pending.lock().await.insert(msg_id.clone(), tx);
 
-            let (server_net, message) =
-                NET_TYPE.setup(msg_id.clone(), dest, remote_server_name, net_id, remote)?;
+            let (server_net, message) = NET_TYPE.setup(
+                msg_id.clone(),
+                dest,
+                remote_server_name,
+                net_id,
+                remote,
+                docker_container,
+            )?;
 
             if outbound.send(Ok(message)).await.is_err() {
                 self.pending.lock().await.remove(&msg_id);
@@ -107,12 +114,17 @@ impl Orchestrator {
         }
     }
 
-    pub(crate) async fn send_net_teardown(&self, dest: IpAddr, net_id: u32) {
+    pub(crate) async fn send_net_teardown(
+        &self,
+        dest: IpAddr,
+        net_id: u32,
+        docker_container: Option<String>,
+    ) {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
             println!("Sending network {net_id} teardown to client {dest}");
 
-            let message = NET_TYPE.teardown(net_id);
+            let message = NET_TYPE.teardown(net_id, docker_container);
 
             let _ = outbound.send(Ok(message)).await.handle_err(location!());
         }
