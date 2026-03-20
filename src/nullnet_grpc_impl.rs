@@ -279,17 +279,19 @@ impl NullnetGrpcImpl {
                 drop(last_id);
 
                 let orch = orchestrator.clone();
+                let cd = client_docker.clone();
                 let sd = server_docker.clone();
                 let server_res =
-                    orch.send_net_setup(server_ethernet, None, net_id, client_ethernet, sd);
+                    orch.send_net_setup(server_ethernet, None, net_id, client_ethernet, (cd, sd));
                 let orch2 = orchestrator.clone();
                 let cd = client_docker.clone();
+                let sd = server_docker.clone();
                 let client_res = orch2.send_net_setup(
                     client_ethernet,
                     Some(server.name().to_string()),
                     net_id,
                     server_ethernet,
-                    cd,
+                    (cd, sd),
                 );
 
                 let (server_ok, client_ok) = tokio::join!(server_res, client_res);
