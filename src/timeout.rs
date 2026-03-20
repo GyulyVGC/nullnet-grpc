@@ -1,4 +1,4 @@
-use crate::constants::TIMEOUT;
+use crate::env::TIMEOUT;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{ServiceChange, apply_changes};
 use crate::services::service_info::ServiceInfo;

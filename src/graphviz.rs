@@ -1,4 +1,4 @@
-use crate::constants::NET_TYPE;
+use crate::env::NET_TYPE;
 use crate::services::clients::ClientInfo;
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{ErrorHandler, Location, location};

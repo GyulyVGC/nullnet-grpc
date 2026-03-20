@@ -1,4 +1,4 @@
-use crate::constants::NET_TYPE;
+use crate::env::NET_TYPE;
 use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;

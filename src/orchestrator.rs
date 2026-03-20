@@ -1,4 +1,4 @@
-use crate::constants::NET_TYPE;
+use crate::env::NET_TYPE;
 use crate::proto::nullnet_grpc::{MsgId, NetMessage};
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::service_info::ServiceInfo;
