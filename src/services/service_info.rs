@@ -178,10 +178,13 @@ impl RegisteredServiceInfo {
             self.clients_mut().remove(client);
 
             orchestrator
-                .send_net_teardown(self.ip, net_id, self.docker_container.clone())
-                .await;
-            orchestrator
-                .send_net_teardown(client_ip, net_id, client_docker)
+                .send_net_teardown(
+                    client_ip,
+                    client_docker,
+                    self.ip,
+                    self.docker_container.clone(),
+                    net_id,
+                )
                 .await;
         }
     }

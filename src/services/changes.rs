@@ -217,10 +217,13 @@ async fn teardown_chain(
 
         for (_, net_id, proxy_ip, client_docker) in &proxy_teardowns {
             orchestrator
-                .send_net_teardown(service_ip, *net_id, service_docker.clone())
-                .await;
-            orchestrator
-                .send_net_teardown(*proxy_ip, *net_id, client_docker.clone())
+                .send_net_teardown(
+                    *proxy_ip,
+                    client_docker.clone(),
+                    service_ip,
+                    service_docker.clone(),
+                    *net_id,
+                )
                 .await;
         }
 

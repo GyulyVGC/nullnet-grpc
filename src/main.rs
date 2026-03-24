@@ -1,6 +1,7 @@
 mod env;
 mod graphviz;
 mod net;
+mod net_id_pool;
 mod nullnet_grpc_impl;
 mod orchestrator;
 mod proto;
@@ -55,5 +56,3 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
 
     NullnetGrpcImpl::new().await
 }
-
-// TODO: reuse NET IDs of unregistered services

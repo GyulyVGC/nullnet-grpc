@@ -53,10 +53,13 @@ impl Net {
         vlan_id: u32,
         remote: IpAddr,
     ) -> Option<(Ipv4Addr, NetMessage)> {
-        let [_, _, a, b] = vlan_id.to_be_bytes();
+        // Map vlan_id to a /30 block within 10.0.0.0/8.
+        // Each ID gets 4 IPs (2 usable), with 2 IPs used for server/client veth.
+        let offset = vlan_id * 4;
+        let [_, a, b, c] = offset.to_be_bytes();
 
-        let server_veth = Ipv4Addr::new(10, a, b, 1);
-        let client_veth = Ipv4Addr::new(10, a, b, 2);
+        let server_veth = Ipv4Addr::new(10, a, b, c + 1);
+        let client_veth = Ipv4Addr::new(10, a, b, c + 2);
 
         let (local_veth, remote_veth) = if remote_server_name.is_some() {
             // this is for client
@@ -95,25 +98,28 @@ impl Net {
         remote: IpAddr,
         docker_containers: (Option<String>, Option<String>),
     ) -> Option<(Ipv4Addr, NetMessage)> {
-        let [_, _, a, b] = vxlan_id.to_be_bytes();
+        // Map vxlan_id to a /29 block within 10.0.0.0/8.
+        // Each ID gets 8 IPs (6 usable), with 4 IPs used for ns/br server/client.
+        let offset = vxlan_id * 8;
+        let [_, a, b, c] = offset.to_be_bytes();
 
         let client_docker = docker_containers.0;
         let server_docker = docker_containers.1;
         let is_server_docker = server_docker.is_some();
 
-        let ns_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 1), 24)
+        let ns_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, c + 1), 29)
             .handle_err(location!())
             .ok()?;
-        let br_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, 2), 24)
+        let br_net_server = Ipv4Network::new(Ipv4Addr::new(10, a, b, c + 2), 29)
             .handle_err(location!())
             .ok()?;
 
         let (ns_net, br_net, docker_container) = if remote_server_name.is_some() {
             // this is for client
-            let ns_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, 3), 24)
+            let ns_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, c + 3), 29)
                 .handle_err(location!())
                 .ok()?;
-            let br_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, 4), 24)
+            let br_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, c + 4), 29)
                 .handle_err(location!())
                 .ok()?;
             (ns_net_client, br_net_client, client_docker)

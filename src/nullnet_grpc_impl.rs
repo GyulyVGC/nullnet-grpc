@@ -15,7 +15,7 @@ use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify, RwLock, mpsc};
+use tokio::sync::{Notify, RwLock, mpsc};
 use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -23,8 +23,6 @@ use tonic::{Request, Response, Status, Streaming};
 pub(crate) struct NullnetGrpcImpl {
     /// The available services
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
-    /// Last registered NET ID
-    last_registered_net: Arc<Mutex<u32>>,
     /// Orchestrator to manage TAP-based clients and NET setups
     orchestrator: Orchestrator,
 }
@@ -61,7 +59,6 @@ impl NullnetGrpcImpl {
 
         Ok(NullnetGrpcImpl {
             services,
-            last_registered_net: Arc::new(Mutex::new(100)),
             orchestrator,
         })
     }
@@ -242,7 +239,6 @@ impl NullnetGrpcImpl {
 
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
-            let last_registered_net = self.last_registered_net.clone();
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
@@ -272,11 +268,16 @@ impl NullnetGrpcImpl {
                 });
                 drop(services_guard);
 
-                // TODO: check for NET ID overflow (max 65535) and reclaim freed IDs
-                let mut last_id = last_registered_net.lock().await;
-                *last_id += 1;
-                let net_id = *last_id;
-                drop(last_id);
+                let Some(net_id) = orchestrator.allocate_net_id().await else {
+                    eprintln!("NET ID pool exhausted");
+                    // remove placeholder
+                    if let Some(ServiceInfo::Registered(reg)) =
+                        services.write().await.get_mut(server.name())
+                    {
+                        reg.clients_mut().remove(&client);
+                    }
+                    return None;
+                };
 
                 let orch = orchestrator.clone();
                 let cd = client_docker.clone();
@@ -297,17 +298,16 @@ impl NullnetGrpcImpl {
                 let (server_ok, client_ok) = tokio::join!(server_res, client_res);
 
                 if server_ok.is_none() || client_ok.is_none() {
-                    // rollback: teardown whichever side succeeded
-                    if server_ok.is_some() {
-                        orchestrator
-                            .send_net_teardown(server_ethernet, net_id, server_docker.clone())
-                            .await;
-                    }
-                    if client_ok.is_some() {
-                        orchestrator
-                            .send_net_teardown(client_ethernet, net_id, client_docker.clone())
-                            .await;
-                    }
+                    // rollback
+                    orchestrator
+                        .send_net_teardown(
+                            client_ethernet,
+                            client_docker.clone(),
+                            server_ethernet,
+                            server_docker.clone(),
+                            net_id,
+                        )
+                        .await;
                     // remove placeholder
                     if let Some(ServiceInfo::Registered(reg)) =
                         services.write().await.get_mut(server.name())
@@ -340,10 +340,13 @@ impl NullnetGrpcImpl {
                     // service was unregistered during setup — teardown NETs
                     drop(guard);
                     orchestrator
-                        .send_net_teardown(server_ethernet, net_id, server_docker)
-                        .await;
-                    orchestrator
-                        .send_net_teardown(client_ethernet, net_id, client_docker)
+                        .send_net_teardown(
+                            client_ethernet,
+                            client_docker,
+                            server_ethernet,
+                            server_docker,
+                            net_id,
+                        )
                         .await;
                 }
 
@@ -373,7 +376,6 @@ impl NullnetGrpcImpl {
     pub(crate) fn new_for_test(services: HashMap<String, ServiceInfo>) -> Self {
         NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services)),
-            last_registered_net: Arc::new(Mutex::new(100)),
             orchestrator: Orchestrator::new(),
         }
     }
