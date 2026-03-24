@@ -145,6 +145,10 @@ impl Orchestrator {
 
 #[cfg(test)]
 impl Orchestrator {
+    pub(crate) async fn net_ids_in_use(&self) -> u32 {
+        self.net_id_pool.lock().await.in_use()
+    }
+
     pub(crate) async fn register_fake_client(&self, ip: IpAddr) {
         use crate::proto::nullnet_grpc::net_message;
 

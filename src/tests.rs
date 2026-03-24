@@ -12,6 +12,14 @@ fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(a, b, c, d))
 }
 
+async fn assert_net_ids_in_use(server: &NullnetGrpcImpl, expected: u32) {
+    let in_use = server.orchestrator().net_ids_in_use().await;
+    assert_eq!(
+        in_use, expected,
+        "expected {expected} NET IDs in use, got {in_use}"
+    );
+}
+
 /// Strip non-deterministic parts (NET IDs, timing) from graphviz edge labels
 /// so that structural comparison is possible.
 fn normalize_graphviz(graphviz: &str) -> String {
@@ -123,6 +131,9 @@ async fn service_removed_setup() -> NullnetGrpcImpl {
     setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
     setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
 
+    // A→C, C→D, proxy1→A, B→D, proxy1→B, proxy2→A = 6 IDs
+    assert_net_ids_in_use(&server, 6).await;
+
     let guard = server.services().read().await;
     assert_graphviz(&guard, SERVICE_REMOVED, "start.dot");
     drop(guard);
@@ -140,7 +151,12 @@ async fn service_removed_remove_A() {
     let mut guard = server.services().write().await;
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_A.dot");
+    drop(guard);
 
+    // A→C, C→D, proxy1→A, proxy2→A freed; B→D, proxy1→B survive = 2 IDs
+    assert_net_ids_in_use(&server, 2).await;
+
+    let guard = server.services().read().await;
     assert!(!guard.contains_key("A"));
     assert!(!guard.contains_key("C"));
     assert!(guard.contains_key("B"));
@@ -156,7 +172,12 @@ async fn service_removed_remove_B() {
     let mut guard = server.services().write().await;
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_B.dot");
+    drop(guard);
 
+    // B→D, proxy1→B freed; A→C, C→D, proxy1→A, proxy2→A survive = 4 IDs
+    assert_net_ids_in_use(&server, 4).await;
+
+    let guard = server.services().read().await;
     assert!(!guard.contains_key("B"));
     assert!(guard.contains_key("A"));
     assert!(guard.contains_key("C"));
@@ -360,6 +381,8 @@ async fn service_unregistered_setup() -> NullnetGrpcImpl {
     setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
     setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
 
+    assert_net_ids_in_use(&server, 6).await;
+
     let guard = server.services().read().await;
     assert_graphviz(&guard, SERVICE_UNREGISTERED, "start.dot");
     drop(guard);
@@ -423,6 +446,7 @@ async fn service_unregistered_drop_C() {
 
 /// Shared dep host 3.3.3.3 re-registers with empty list (D unregistered).
 /// Cascades to A (deps on D) and B (deps on D). All chains torn down.
+/// All 6 NET IDs freed.
 #[tokio::test]
 async fn service_unregistered_drop_D() {
     let server = service_unregistered_setup().await;
@@ -434,7 +458,12 @@ async fn service_unregistered_drop_D() {
 
     let guard = server.services().read().await;
     assert_graphviz(&guard, SERVICE_UNREGISTERED, "after_drop_D.dot");
+    drop(guard);
 
+    // all 6 IDs freed
+    assert_net_ids_in_use(&server, 0).await;
+
+    let guard = server.services().read().await;
     assert!(matches!(guard["D"], ServiceInfo::Unregistered(_)));
 }
 
@@ -466,6 +495,8 @@ async fn node_disconnected_setup() -> NullnetGrpcImpl {
     setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
     setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
 
+    assert_net_ids_in_use(&server, 6).await;
+
     let guard = server.services().read().await;
     assert_graphviz(&guard, NODE_DISCONNECTED, "start.dot");
     drop(guard);
@@ -475,6 +506,7 @@ async fn node_disconnected_setup() -> NullnetGrpcImpl {
 
 /// A+B host (1.1.1.1) disconnects. BOTH A and B cleaned up (unlike
 /// service_unregistered which can drop selectively).
+/// All 6 NET IDs freed.
 #[tokio::test]
 async fn node_disconnected_A_B() {
     let server = node_disconnected_setup().await;
@@ -486,7 +518,11 @@ async fn node_disconnected_A_B() {
 
     let guard = server.services().read().await;
     assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_A_B.dot");
+    drop(guard);
 
+    assert_net_ids_in_use(&server, 0).await;
+
+    let guard = server.services().read().await;
     assert!(matches!(guard["A"], ServiceInfo::Unregistered(_)));
     assert!(matches!(guard["B"], ServiceInfo::Unregistered(_)));
 }
@@ -538,7 +574,12 @@ async fn node_disconnected_proxy1() {
 
     let guard = server.services().read().await;
     assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_proxy1.dot");
+    drop(guard);
 
+    // proxy1→A, proxy1→B, B→D freed; A→C, C→D, proxy2→A survive = 3 IDs
+    assert_net_ids_in_use(&server, 3).await;
+
+    let guard = server.services().read().await;
     assert!(matches!(guard["A"], ServiceInfo::Registered(_)));
     assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
     assert!(matches!(guard["C"], ServiceInfo::Registered(_)));
@@ -571,6 +612,8 @@ async fn proxy_timeout_setup() -> NullnetGrpcImpl {
     setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
     setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
     setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
+
+    assert_net_ids_in_use(&server, 6).await;
 
     let guard = server.services().read().await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "start.dot");
@@ -632,9 +675,14 @@ async fn proxy_timeout_A_then_B() {
             );
         }
     }
+    drop(guard);
+
+    // all 6 IDs freed
+    assert_net_ids_in_use(&server, 0).await;
 }
 
 /// After 2s+ both A and B expire simultaneously in a single apply.
+/// All 6 NET IDs freed.
 #[tokio::test]
 async fn proxy_timeout_all_at_once() {
     let server = proxy_timeout_setup().await;
@@ -653,6 +701,9 @@ async fn proxy_timeout_all_at_once() {
             );
         }
     }
+    drop(guard);
+
+    assert_net_ids_in_use(&server, 0).await;
 }
 
 /// Config update tightens B's timeout from 2→1. After 1.5s, B's clients

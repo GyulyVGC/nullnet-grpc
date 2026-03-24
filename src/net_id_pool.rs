@@ -62,11 +62,19 @@ impl NetIdPool {
 }
 
 #[cfg(test)]
+impl NetIdPool {
+    /// Number of IDs currently in use (allocated but not freed).
+    pub(crate) fn in_use(&self) -> u32 {
+        (self.next_fresh - MIN_NET_ID) - self.freed.len() as u32
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn allocate_sequential() {
+    fn test_allocate_sequential_net_ids() {
         let mut pool = NetIdPool::new();
         assert_eq!(pool.allocate(), Some(101));
         assert_eq!(pool.allocate(), Some(102));
@@ -74,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn reuse_freed_ids() {
+    fn test_reuse_freed_net_ids() {
         let mut pool = NetIdPool::new();
         let id1 = pool.allocate().unwrap();
         let id2 = pool.allocate().unwrap();
@@ -94,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn exhaustion() {
+    fn test_net_ids_exhaustion() {
         let mut pool = NetIdPool::new();
         pool.next_fresh = *MAX_NET_ID;
 
@@ -108,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn free_ignores_out_of_range() {
+    fn test_free_ignores_out_of_range_net_ids() {
         let mut pool = NetIdPool::new();
         pool.free(0);
         pool.free(100); // below MIN_NET_ID
