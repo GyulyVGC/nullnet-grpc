@@ -3,11 +3,11 @@ digraph G {
 	node [color=white, fontcolor=white];
 	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
 
-	"A" [style=solid, color=green];
+	"A" [label="A"] [style=solid, color=green];
 
-	"B" [style=solid, color=green];
+	"B" [label="B"] [style=solid, color=green];
 
-	"C" [style=dashed, color=green];
+	"C" [label="C"] [style=dashed, color=green];
 
-	"D" [style=dashed, color=green];
+	"D" [label="D"] [style=dashed, color=green];
 }

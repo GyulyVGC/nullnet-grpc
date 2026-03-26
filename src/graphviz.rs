@@ -20,9 +20,15 @@ pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String
     );
     for (name, info) in entries {
         let style = info.graphviz_style();
-        let _ = writeln!(graphviz, "\t\"{name}\" {style};").handle_err(location!());
+        let label = info.graphviz_label(name);
+        let _ = writeln!(graphviz, "\t\"{name}\" [label=\"{label}\"] {style};")
+            .handle_err(location!());
         if let ServiceInfo::Registered(registered) = info {
-            let mut edges: Vec<_> = registered.clients().iter().collect();
+            let mut edges: Vec<_> = registered
+                .replicas()
+                .iter()
+                .flat_map(|replica| replica.clients().iter())
+                .collect();
             edges.sort_by_key(|(c, _)| c.display_name());
             for (c, ci) in edges {
                 let c_name = c.display_name();
@@ -53,6 +59,21 @@ pub(crate) async fn generate_graphviz(services: Arc<RwLock<HashMap<String, Servi
 }
 
 impl ServiceInfo {
+    fn graphviz_label(&self, name: &str) -> String {
+        if let ServiceInfo::Registered(reg) = self {
+            let total = reg.replicas().len();
+            let active = reg
+                .replicas()
+                .iter()
+                .filter(|r| !r.clients().is_empty())
+                .count();
+            if total > 1 || active > 0 {
+                return format!("{name} ({active}/{total})");
+            }
+        }
+        name.to_string()
+    }
+
     fn graphviz_style(&self) -> &'static str {
         let is_proxy_reachable = self.is_proxy_reachable().is_some();
         match self {

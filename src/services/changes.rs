@@ -12,8 +12,14 @@ pub(crate) enum ServiceChange {
     DepsChanged { name: String },
     /// Service `proxy_reachable` flag toggled in config.
     ReachabilityChanged { name: String },
-    /// Host re-registered without this service.
-    Unregistered { name: String },
+    /// All replicas on a specific IP were removed (node disconnected).
+    ReplicasRemoved { name: String, ip: IpAddr },
+    /// A single replica was removed (host re-registered without this container).
+    ReplicaRemoved {
+        name: String,
+        ip: IpAddr,
+        docker_container: Option<String>,
+    },
     /// A proxy node disconnected; tear down its proxy chains.
     ProxyDisconnected { ip: IpAddr },
     /// A proxy client's timeout expired; tear down its chains.
@@ -57,7 +63,7 @@ pub(crate) fn detect_config_changes(
             } else if loaded_info.is_proxy_reachable().is_some()
                 != old_info.is_proxy_reachable().is_some()
             {
-                // reachability toggled (Some ↔ None)
+                // reachability toggled (Some <-> None)
                 changes.push(ServiceChange::ReachabilityChanged { name: name.clone() });
             } else if let (Some(new_timeout), Some(old_timeout)) = (
                 loaded_info.is_proxy_reachable(),
@@ -87,18 +93,32 @@ pub(crate) fn detect_services_list_changes(
     sender_ip: IpAddr,
     service_list: &[(String, u16, Option<String>)],
 ) -> Vec<ServiceChange> {
-    current
-        .iter()
-        .filter_map(|(name, si)| {
-            if let ServiceInfo::Registered(reg) = si
-                && reg.ip_port().0 == sender_ip
-                && !service_list.iter().any(|(s, _, _)| s == name)
-            {
-                return Some(ServiceChange::Unregistered { name: name.clone() });
+    let mut changes = Vec::new();
+
+    for (name, si) in current {
+        let ServiceInfo::Registered(reg) = si else {
+            continue;
+        };
+
+        for replica in reg.replicas() {
+            if replica.ip() != sender_ip {
+                continue;
             }
-            None
-        })
-        .collect()
+            // Check if this specific replica is still in the sender's list
+            let is_in_list = service_list
+                .iter()
+                .any(|(n, _, dc)| n == name && dc.as_deref() == replica.docker_container());
+            if !is_in_list {
+                changes.push(ServiceChange::ReplicaRemoved {
+                    name: name.clone(),
+                    ip: sender_ip,
+                    docker_container: replica.docker_container().map(String::from),
+                });
+            }
+        }
+    }
+
+    changes
 }
 
 pub(crate) fn detect_node_disconnect_changes(
@@ -109,9 +129,12 @@ pub(crate) fn detect_node_disconnect_changes(
         .iter()
         .filter_map(|(name, si)| {
             if let ServiceInfo::Registered(reg) = si
-                && reg.ip_port().0 == disconnected_ip
+                && reg.has_replica_on_ip(disconnected_ip)
             {
-                return Some(ServiceChange::Unregistered { name: name.clone() });
+                return Some(ServiceChange::ReplicasRemoved {
+                    name: name.clone(),
+                    ip: disconnected_ip,
+                });
             }
             None
         })
@@ -119,9 +142,12 @@ pub(crate) fn detect_node_disconnect_changes(
 
     let has_proxy_clients = current.iter().any(|(_, si)| {
         if let ServiceInfo::Registered(reg) = si {
-            reg.clients()
-                .keys()
-                .any(|c| c.is_proxy() == Some(disconnected_ip))
+            reg.replicas().iter().any(|replica| {
+                replica
+                    .clients()
+                    .keys()
+                    .any(|c| c.is_proxy() == Some(disconnected_ip))
+            })
         } else {
             false
         }
@@ -165,8 +191,13 @@ async fn teardown_invalidated_service(
         teardown_chain(&name, services, orchestrator, ProxyFilter::All).await;
     }
 
-    if is_failed && let Some(s) = services.get_mut(invalidated_service) {
-        s.unregister();
+    if is_failed && let Some(si @ ServiceInfo::Registered(_)) = services.get(invalidated_service) {
+        let deps = si.dependencies();
+        let proxy = si.is_proxy_reachable();
+        services.insert(
+            invalidated_service.to_string(),
+            ServiceInfo::new(deps, proxy),
+        );
     }
 }
 
@@ -180,55 +211,181 @@ async fn teardown_chain(
         return;
     };
 
-    let num_proxy_clients = reg
-        .clients()
+    let all_clients = reg.all_clients_owned();
+    let num_proxy_clients = all_clients
         .iter()
-        .filter(|(c, _)| proxy_filter.matches(c))
+        .filter(|(c, _, _, _)| proxy_filter.matches(c))
         .count();
 
-    let chain = reg.dependency_chain(name.to_string(), services);
+    // Walk the dependency chain to decrement active_chains on each server.
+    // The exact replica IPs don't matter here — remove_chains uses the IPs
+    // stored in ClientInfo at setup time.
+    let deps = reg.dependencies().clone();
+    let mut dep_clients: Vec<(String, String)> = Vec::new();
+    let mut current_name = name.to_string();
+    for dep in &deps {
+        dep_clients.push((current_name.clone(), dep.clone()));
+        current_name.clone_from(dep);
+    }
 
-    for edge in chain {
-        let (client_ip, client) = edge.client;
-        let (_, server) = edge.server;
-
-        let Some(client_ip) = client_ip else { continue };
-        if let Some(ServiceInfo::Registered(reg)) = services.get_mut(server.name()) {
-            reg.remove_chains(client_ip, &client, num_proxy_clients, orchestrator)
+    for (client_name, server_name) in dep_clients {
+        let client = Client::new(client_name, None);
+        if let Some(ServiceInfo::Registered(reg)) = services.get_mut(&server_name) {
+            reg.remove_chains(&client, num_proxy_clients, orchestrator)
                 .await;
         }
     }
 
+    // Tear down proxy edges — client_ip comes from ClientInfo, not reconstructed
+    let proxy_teardowns: Vec<_> = all_clients
+        .into_iter()
+        .filter_map(|(c, ci, replica_ip, replica_docker)| {
+            if proxy_filter.matches(&c) && c.is_proxy().is_some() {
+                Some((
+                    c,
+                    ci.client_ip(),
+                    ci.net_id(),
+                    ci.docker_container().cloned(),
+                    replica_ip,
+                    replica_docker,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
+        orchestrator
+            .send_net_teardown(
+                *client_ip,
+                client_docker.clone(),
+                *service_ip,
+                service_docker.clone(),
+                *net_id,
+            )
+            .await;
+    }
+
     if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
-        let service_ip = reg.ip_port().0;
-        let service_docker = reg.docker_container().map(String::from);
-        let proxy_teardowns: Vec<_> = reg
-            .clients()
-            .iter()
-            .filter_map(|(c, ci)| {
-                let pip = c.is_proxy()?;
-                if proxy_filter.matches(c) {
-                    Some((c.clone(), ci.net_id(), pip, ci.docker_container().cloned()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for (_, net_id, proxy_ip, client_docker) in &proxy_teardowns {
-            orchestrator
-                .send_net_teardown(
-                    *proxy_ip,
-                    client_docker.clone(),
-                    service_ip,
-                    service_docker.clone(),
-                    *net_id,
-                )
-                .await;
+        for (client, _, _, _, _, _) in proxy_teardowns {
+            reg.remove_client(&client);
         }
+    }
+}
 
-        for (client, _, _, _) in proxy_teardowns {
-            reg.clients_mut().remove(&client);
+/// Tear down only the chains that were using replicas at `removed_ip`.
+///
+/// Checks which service-to-service clients are on the affected replicas
+/// and tears down only those services' chains. Chains connected to
+/// surviving replicas are left untouched.
+///
+/// Proxy clients on the affected replicas are torn down directly
+/// (not via `teardown_chain`) to avoid tearing down proxy clients on
+/// surviving replicas.
+async fn teardown_replicas_on_ip(
+    name: &str,
+    removed_ip: IpAddr,
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
+        return;
+    };
+
+    // Service-to-service clients on the removed replicas — tear down their full chains
+    let affected: Vec<String> = reg.service_clients_on_ip(removed_ip);
+
+    // Proxy clients on the removed replicas — tear down directly (not via teardown_chain
+    // which would also hit proxy clients on surviving replicas)
+    let proxy_teardowns: Vec<_> = reg
+        .all_clients_owned()
+        .into_iter()
+        .filter(|(c, _, rip, _)| c.is_proxy().is_some() && *rip == removed_ip)
+        .map(|(c, ci, rip, rd)| {
+            (
+                c,
+                ci.client_ip(),
+                ci.net_id(),
+                ci.docker_container().cloned(),
+                rip,
+                rd,
+            )
+        })
+        .collect();
+
+    for sn in affected {
+        teardown_chain(&sn, services, orchestrator, ProxyFilter::All).await;
+    }
+
+    for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
+        orchestrator
+            .send_net_teardown(
+                *client_ip,
+                client_docker.clone(),
+                *service_ip,
+                service_docker.clone(),
+                *net_id,
+            )
+            .await;
+    }
+    if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
+        for (client, _, _, _, _, _) in proxy_teardowns {
+            reg.remove_client(&client);
+        }
+    }
+}
+
+/// Tear down only the chains that were using a specific replica.
+async fn teardown_single_replica(
+    name: &str,
+    removed_ip: IpAddr,
+    removed_docker: Option<&str>,
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
+        return;
+    };
+
+    let affected: Vec<String> = reg.service_clients_on_replica(removed_ip, removed_docker);
+
+    let proxy_teardowns: Vec<_> = reg
+        .all_clients_owned()
+        .into_iter()
+        .filter(|(c, _, rip, rd)| {
+            c.is_proxy().is_some() && *rip == removed_ip && rd.as_deref() == removed_docker
+        })
+        .map(|(c, ci, rip, rd)| {
+            (
+                c,
+                ci.client_ip(),
+                ci.net_id(),
+                ci.docker_container().cloned(),
+                rip,
+                rd,
+            )
+        })
+        .collect();
+
+    for sn in affected {
+        teardown_chain(&sn, services, orchestrator, ProxyFilter::All).await;
+    }
+
+    for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
+        orchestrator
+            .send_net_teardown(
+                *client_ip,
+                client_docker.clone(),
+                *service_ip,
+                service_docker.clone(),
+                *net_id,
+            )
+            .await;
+    }
+    if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
+        for (client, _, _, _, _, _) in proxy_teardowns {
+            reg.remove_client(&client);
         }
     }
 }
@@ -253,15 +410,60 @@ pub(crate) async fn apply_changes(
             ServiceChange::ReachabilityChanged { name } => {
                 teardown_chain(&name, services, orchestrator, ProxyFilter::All).await;
             }
-            ServiceChange::Unregistered { name } => {
-                teardown_invalidated_service(&name, true, services, orchestrator).await;
+            ServiceChange::ReplicasRemoved { name, ip } => {
+                // Check if removing this IP's replicas would leave the service with zero replicas
+                let is_last = if let Some(ServiceInfo::Registered(reg)) = services.get(&name) {
+                    reg.replicas().iter().all(|r| r.ip() == ip)
+                } else {
+                    false
+                };
+
+                if is_last {
+                    // Last replica gone — full teardown + cascade to dependents
+                    teardown_invalidated_service(&name, true, services, orchestrator).await;
+                } else {
+                    // Partial removal — only tear down chains using replicas on this IP
+                    teardown_replicas_on_ip(&name, ip, services, orchestrator).await;
+                    if let Some(si) = services.get_mut(&name) {
+                        si.remove_replicas_on_ip(ip);
+                    }
+                }
+            }
+            ServiceChange::ReplicaRemoved {
+                name,
+                ip,
+                docker_container,
+            } => {
+                let is_last = if let Some(ServiceInfo::Registered(reg)) = services.get(&name) {
+                    reg.replicas().len() == 1
+                } else {
+                    false
+                };
+
+                if is_last {
+                    teardown_invalidated_service(&name, true, services, orchestrator).await;
+                } else {
+                    teardown_single_replica(
+                        &name,
+                        ip,
+                        docker_container.as_deref(),
+                        services,
+                        orchestrator,
+                    )
+                    .await;
+                    if let Some(si) = services.get_mut(&name) {
+                        si.remove_replica(ip, docker_container.as_deref());
+                    }
+                }
             }
             ServiceChange::ProxyDisconnected { ip } => {
                 let proxy_services: Vec<String> = services
                     .iter()
                     .filter(|(_, si)| {
                         if let ServiceInfo::Registered(reg) = si {
-                            reg.clients().keys().any(|c| c.is_proxy() == Some(ip))
+                            reg.replicas().iter().any(|replica| {
+                                replica.clients().keys().any(|c| c.is_proxy() == Some(ip))
+                            })
                         } else {
                             false
                         }

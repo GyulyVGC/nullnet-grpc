@@ -56,6 +56,8 @@ impl Client {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ClientInfo {
+    /// Real IP of the client node (used for teardown).
+    client_ip: IpAddr,
     client_net: Ipv4Addr,
     server_net: Ipv4Addr,
     net_id: u32,
@@ -67,6 +69,7 @@ pub(crate) struct ClientInfo {
 
 impl ClientInfo {
     pub(crate) fn new(
+        client_ip: IpAddr,
         client_net: Ipv4Addr,
         server_net: Ipv4Addr,
         net_id: u32,
@@ -74,6 +77,7 @@ impl ClientInfo {
         docker_container: Option<String>,
     ) -> Self {
         Self {
+            client_ip,
             client_net,
             server_net,
             net_id,
@@ -84,8 +88,9 @@ impl ClientInfo {
         }
     }
 
-    pub(crate) fn placeholder() -> Self {
+    pub(crate) fn placeholder(client_ip: IpAddr) -> Self {
         Self {
+            client_ip,
             client_net: Ipv4Addr::UNSPECIFIED,
             server_net: Ipv4Addr::UNSPECIFIED,
             net_id: 0,
@@ -94,6 +99,10 @@ impl ClientInfo {
             latest: Instant::now(),
             docker_container: None,
         }
+    }
+
+    pub(crate) fn client_ip(&self) -> IpAddr {
+        self.client_ip
     }
 
     pub(crate) fn docker_container(&self) -> Option<&String> {

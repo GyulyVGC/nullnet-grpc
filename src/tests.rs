@@ -63,7 +63,7 @@ async fn register_services(server: &NullnetGrpcImpl, ip_map: &HashMap<&str, IpAd
     let mut services = server.services().write().await;
     for (&name, &svc_ip) in ip_map {
         if let Some(si) = services.get_mut(name) {
-            si.register(svc_ip, port, None);
+            si.add_replica(svc_ip, port, None);
         }
     }
     drop(services);
@@ -99,8 +99,23 @@ async fn setup_proxy_chain(
     proxy_ip: IpAddr,
     client_ip: &str,
 ) {
+    let (service_ip, service_docker) = {
+        let guard = server.services().read().await;
+        let ServiceInfo::Registered(reg) = guard.get(service_name).expect("service not found")
+        else {
+            panic!("service not registered");
+        };
+        let replica = reg.pick_replica_least_clients();
+        (replica.ip(), replica.docker_container().map(String::from))
+    };
     server
-        .setup_proxy_chain(service_name, proxy_ip, client_ip)
+        .setup_proxy_chain(
+            service_name,
+            proxy_ip,
+            client_ip,
+            service_ip,
+            service_docker.as_deref(),
+        )
         .await
         .expect("setup_proxy_chain failed");
 }
@@ -640,10 +655,10 @@ async fn proxy_timeout_A() {
     // B's proxy client is still alive
     assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
     if let ServiceInfo::Registered(reg) = &guard["B"] {
-        assert_eq!(reg.clients().len(), 1);
+        assert_eq!(reg.client_count(), 1);
     }
     if let ServiceInfo::Registered(reg) = &guard["A"] {
-        assert!(reg.clients().is_empty());
+        assert!(!reg.has_clients());
     }
 }
 
@@ -670,7 +685,7 @@ async fn proxy_timeout_A_then_B() {
     for (_, si) in guard.iter() {
         if let ServiceInfo::Registered(reg) = si {
             assert!(
-                reg.clients().is_empty(),
+                !reg.has_clients(),
                 "expected no proxy clients after both timeouts"
             );
         }
@@ -696,7 +711,7 @@ async fn proxy_timeout_all_at_once() {
     for (_, si) in guard.iter() {
         if let ServiceInfo::Registered(reg) = si {
             assert!(
-                reg.clients().is_empty(),
+                !reg.has_clients(),
                 "expected no proxy clients after full timeout"
             );
         }
@@ -723,11 +738,11 @@ async fn proxy_timeout_config_tighten_B() {
 
     // B's proxy client expired due to config tightening
     if let ServiceInfo::Registered(reg) = &guard["B"] {
-        assert!(reg.clients().is_empty());
+        assert!(!reg.has_clients());
     }
     // A's clients are still present (config path only handles config changes)
     if let ServiceInfo::Registered(reg) = &guard["A"] {
-        assert_eq!(reg.clients().len(), 2);
+        assert_eq!(reg.client_count(), 2);
     }
 }
 
@@ -748,10 +763,435 @@ async fn proxy_timeout_config_remove_timeout_A() {
     // A's timeout was removed — no expiry, clients still present
     assert_eq!(guard["A"].is_proxy_reachable(), Some(0));
     if let ServiceInfo::Registered(reg) = &guard["A"] {
-        assert_eq!(reg.clients().len(), 2);
+        assert_eq!(reg.client_count(), 2);
     }
     // B unchanged
     if let ServiceInfo::Registered(reg) = &guard["B"] {
-        assert_eq!(reg.clients().len(), 1);
+        assert_eq!(reg.client_count(), 1);
     }
+}
+
+// ===========================================================================
+// multi_replica: A→B, C→B. B has 3 replicas across 2 IPs:
+//   - 2.2.2.2 container "b1"
+//   - 2.2.2.2 container "b2"  (Docker Swarm: two containers, same host)
+//   - 4.4.4.4 (no container)
+// Tests round-robin, sticky sessions, and partial replica removal.
+// ===========================================================================
+
+const MULTI_REPLICA: &str = "multi_replica";
+
+async fn multi_replica_setup() -> NullnetGrpcImpl {
+    let services = load_fixture(MULTI_REPLICA).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    // A at 1.1.1.1, C at 3.3.3.3
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("C", ip(3, 3, 3, 3))]);
+    register_services(&server, &ip_map, 8080).await;
+
+    // B has 3 replicas across 2 IPs:
+    //   2.2.2.2 "b1", 4.4.4.4 (standalone), 2.2.2.2 "b2" (same host, Docker Swarm)
+    // Insertion order matters for least-clients tie-breaking (first with min wins),
+    // so 4.4.4.4 is inserted between the two Docker Swarm containers to ensure
+    // least-clients distributes across IPs.
+    {
+        let mut services = server.services().write().await;
+        services
+            .get_mut("B")
+            .unwrap()
+            .add_replica(ip(2, 2, 2, 2), 8080, Some("b1".into()));
+        services
+            .get_mut("B")
+            .unwrap()
+            .add_replica(ip(4, 4, 4, 4), 8080, None);
+        services
+            .get_mut("B")
+            .unwrap()
+            .add_replica(ip(2, 2, 2, 2), 8080, Some("b2".into()));
+    }
+    server
+        .orchestrator()
+        .register_fake_client(ip(2, 2, 2, 2))
+        .await;
+    server
+        .orchestrator()
+        .register_fake_client(ip(4, 4, 4, 4))
+        .await;
+
+    server
+}
+
+/// B has 3 replicas across 2 IPs. Verify all are present.
+#[tokio::test]
+async fn multi_replica_register() {
+    let server = multi_replica_setup().await;
+    let guard = server.services().read().await;
+
+    let ServiceInfo::Registered(reg) = &guard["B"] else {
+        panic!("B should be registered");
+    };
+    assert_eq!(reg.replicas().len(), 3);
+    // 2 replicas on 2.2.2.2 (containers "b1" and "b2"), 1 on 4.4.4.4
+    assert!(reg.has_replica_on_ip(ip(2, 2, 2, 2)));
+    assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
+    let on_2: Vec<_> = reg
+        .replicas()
+        .iter()
+        .filter(|r| r.ip() == ip(2, 2, 2, 2))
+        .collect();
+    assert_eq!(
+        on_2.len(),
+        2,
+        "2.2.2.2 should have 2 replicas (Docker Swarm)"
+    );
+    let containers: HashSet<_> = on_2.iter().filter_map(|r| r.docker_container()).collect();
+    assert!(containers.contains("b1"));
+    assert!(containers.contains("b2"));
+}
+
+/// Least-clients: proxy requests and dependency chains pick the replica
+/// with the fewest active clients.  After two proxy chains (A and C both
+/// depend on B), B's 3 replicas should spread: the second chain picks a
+/// different replica than the first.
+#[tokio::test]
+async fn multi_replica_least_clients() {
+    let server = multi_replica_setup().await;
+    let proxy1 = ip(5, 5, 5, 5);
+    server.orchestrator().register_fake_client(proxy1).await;
+
+    // First chain: proxy1 -> A -> B (picks least-loaded B replica, all empty)
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+
+    {
+        let guard = server.services().read().await;
+        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+            panic!("B should be registered");
+        };
+        assert_eq!(
+            reg_b.client_count(),
+            1,
+            "B should have 1 client after first chain"
+        );
+    }
+
+    // Second chain: proxy1 -> C -> B (picks a *different* B replica since the
+    // first now has 1 client while two others have 0)
+    setup_proxy_chain(&server, "C", proxy1, "10.0.0.2").await;
+
+    let guard = server.services().read().await;
+    assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
+
+    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+        panic!("B should be registered");
+    };
+
+    // B should now have 2 clients spread across replicas
+    assert_eq!(reg_b.client_count(), 2, "B should have 2 clients total");
+
+    // No single replica should hold both
+    for replica in reg_b.replicas() {
+        assert!(
+            replica.clients().len() <= 1,
+            "each B replica should have at most 1 client, got {}",
+            replica.clients().len()
+        );
+    }
+}
+
+/// Sticky session: same proxy client reconnects to the same replica.
+#[tokio::test]
+async fn multi_replica_sticky_session() {
+    let server = multi_replica_setup().await;
+    let proxy1 = ip(5, 5, 5, 5);
+    server.orchestrator().register_fake_client(proxy1).await;
+
+    // First request from client 10.0.0.1
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+
+    // Record which upstream the client got
+    let first_upstream = {
+        let guard = server.services().read().await;
+        let ServiceInfo::Registered(reg) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        let client = crate::services::clients::Client::new("10.0.0.1".to_string(), Some(proxy1));
+        reg.is_client_setup(&client)
+            .expect("client should be set up")
+    };
+
+    // Second lookup from same client — should be sticky (same upstream)
+    let second_upstream = {
+        let guard = server.services().read().await;
+        let ServiceInfo::Registered(reg) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        let client = crate::services::clients::Client::new("10.0.0.1".to_string(), Some(proxy1));
+        reg.is_client_setup(&client)
+            .expect("client should still be set up")
+    };
+
+    assert_eq!(
+        first_upstream, second_upstream,
+        "sticky session should return same upstream"
+    );
+}
+
+/// Partial replica removal: disconnect 2.2.2.2 removes two of B's replicas
+/// ("b1" and "b2"), but B stays registered via the replica at 4.4.4.4.
+///
+/// With least-clients distribution:
+///   A→B lands on "b1" (2.2.2.2)  — affected by disconnect
+///   C→B lands on 4.4.4.4         — NOT affected, chain survives
+#[tokio::test]
+async fn multi_replica_partial_disconnect() {
+    let server = multi_replica_setup().await;
+    let proxy1 = ip(5, 5, 5, 5);
+    server.orchestrator().register_fake_client(proxy1).await;
+
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+    setup_proxy_chain(&server, "C", proxy1, "10.0.0.2").await;
+
+    // A→B, proxy→A, C→B, proxy→C = 4 NET IDs
+    assert_net_ids_in_use(&server, 4).await;
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
+    }
+
+    // Disconnect 2.2.2.2 — removes "b1" and "b2" replicas.
+    // Only A→B (on "b1") is affected; C→B (on 4.4.4.4) survives.
+    server
+        .orchestrator()
+        .handle_node_disconnect(ip(2, 2, 2, 2), server.services())
+        .await;
+
+    let guard = server.services().read().await;
+    assert_graphviz(&guard, MULTI_REPLICA, "after_partial_disconnect.dot");
+
+    // B should still be registered (has replica at 4.4.4.4)
+    assert!(
+        matches!(guard["B"], ServiceInfo::Registered(_)),
+        "B should still be registered with remaining replica"
+    );
+    if let ServiceInfo::Registered(reg) = &guard["B"] {
+        assert_eq!(reg.replicas().len(), 1, "B should have 1 replica left");
+        assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
+        assert!(!reg.has_replica_on_ip(ip(2, 2, 2, 2)));
+        // C→B on 4.4.4.4 survived — B still has 1 client
+        assert_eq!(reg.client_count(), 1, "C→B chain should survive");
+    }
+
+    // A's chain was torn down (A→B was on removed replica)
+    if let ServiceInfo::Registered(reg) = &guard["A"] {
+        assert!(!reg.has_clients(), "A should have no proxy clients");
+    }
+
+    // C's chain survived (C→B was on 4.4.4.4)
+    if let ServiceInfo::Registered(reg) = &guard["C"] {
+        assert_eq!(
+            reg.client_count(),
+            1,
+            "C should still have its proxy client"
+        );
+    }
+
+    // A→B and proxy→A freed; C→B and proxy→C survive = 2 NET IDs
+    drop(guard);
+    assert_net_ids_in_use(&server, 2).await;
+}
+
+/// Full replica removal: disconnect 2.2.2.2 (removes "b1" + "b2"), then
+/// disconnect 4.4.4.4 (removes last replica). B becomes unregistered and
+/// cascades to A and C.
+#[tokio::test]
+async fn multi_replica_full_disconnect() {
+    let server = multi_replica_setup().await;
+    let proxy1 = ip(5, 5, 5, 5);
+    server.orchestrator().register_fake_client(proxy1).await;
+
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+    setup_proxy_chain(&server, "C", proxy1, "10.0.0.2").await;
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
+    }
+
+    // Disconnect 2.2.2.2 (partial) — removes 2 of 3 replicas, cascades chains through B
+    server
+        .orchestrator()
+        .handle_node_disconnect(ip(2, 2, 2, 2), server.services())
+        .await;
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MULTI_REPLICA, "after_partial_disconnect.dot");
+        // B should still be registered (has replica at 4.4.4.4)
+        assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
+        if let ServiceInfo::Registered(reg) = &guard["B"] {
+            assert_eq!(reg.replicas().len(), 1);
+        }
+    }
+
+    // Disconnect 4.4.4.4 — last replica, full teardown
+    server
+        .orchestrator()
+        .handle_node_disconnect(ip(4, 4, 4, 4), server.services())
+        .await;
+
+    let guard = server.services().read().await;
+    assert_graphviz(&guard, MULTI_REPLICA, "after_full_disconnect.dot");
+
+    // B should be unregistered (no replicas)
+    assert!(
+        matches!(guard["B"], ServiceInfo::Unregistered(_)),
+        "B should be unregistered with no replicas"
+    );
+
+    // All NET IDs should be freed
+    drop(guard);
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+/// ServicesList from two hosts: host 2.2.2.2 sends two containers ("b1", "b2"),
+/// host 4.4.4.4 sends one standalone replica. Then host 2.2.2.2 re-registers
+/// with empty list — both its replicas are removed, but 4.4.4.4's stays.
+#[tokio::test]
+async fn multi_replica_via_services_list() {
+    let services = load_fixture(MULTI_REPLICA).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    // Host 2.2.2.2 registers B in two containers
+    server
+        .orchestrator()
+        .register_fake_client(ip(2, 2, 2, 2))
+        .await;
+    server
+        .apply_services_list(
+            ip(2, 2, 2, 2),
+            &[
+                ("B".into(), 8080, Some("b1".into())),
+                ("B".into(), 8080, Some("b2".into())),
+            ],
+        )
+        .await
+        .expect("apply_services_list failed");
+
+    // Host 4.4.4.4 registers B standalone
+    server
+        .orchestrator()
+        .register_fake_client(ip(4, 4, 4, 4))
+        .await;
+    server
+        .apply_services_list(ip(4, 4, 4, 4), &[("B".into(), 9090, None)])
+        .await
+        .expect("apply_services_list failed");
+
+    {
+        let guard = server.services().read().await;
+        let ServiceInfo::Registered(reg) = &guard["B"] else {
+            panic!("B should be registered");
+        };
+        assert_eq!(reg.replicas().len(), 3);
+        let on_2: Vec<_> = reg
+            .replicas()
+            .iter()
+            .filter(|r| r.ip() == ip(2, 2, 2, 2))
+            .collect();
+        assert_eq!(on_2.len(), 2, "2.2.2.2 should have 2 replicas");
+        assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
+    }
+
+    // Host 2.2.2.2 re-registers WITHOUT B → both its replicas removed
+    server
+        .apply_services_list(ip(2, 2, 2, 2), &[])
+        .await
+        .expect("apply_services_list failed");
+
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg) = &guard["B"] else {
+        panic!("B should still be registered");
+    };
+    assert_eq!(
+        reg.replicas().len(),
+        1,
+        "only 4.4.4.4 replica should remain"
+    );
+    assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
+    assert!(!reg.has_replica_on_ip(ip(2, 2, 2, 2)));
+}
+
+/// Docker Swarm: host 2.2.2.2 runs containers "b1" and "b2". Container "b1"
+/// dies, so the host re-registers with only "b2". Only "b1" is removed;
+/// "b2" and the standalone 4.4.4.4 replica survive.
+#[tokio::test]
+async fn multi_replica_single_container_removed() {
+    let services = load_fixture(MULTI_REPLICA).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    // Host 2.2.2.2 registers B in two containers
+    server
+        .orchestrator()
+        .register_fake_client(ip(2, 2, 2, 2))
+        .await;
+    server
+        .apply_services_list(
+            ip(2, 2, 2, 2),
+            &[
+                ("B".into(), 8080, Some("b1".into())),
+                ("B".into(), 8080, Some("b2".into())),
+            ],
+        )
+        .await
+        .expect("apply_services_list failed");
+
+    // Host 4.4.4.4 registers B standalone
+    server
+        .orchestrator()
+        .register_fake_client(ip(4, 4, 4, 4))
+        .await;
+    server
+        .apply_services_list(ip(4, 4, 4, 4), &[("B".into(), 9090, None)])
+        .await
+        .expect("apply_services_list failed");
+
+    {
+        let guard = server.services().read().await;
+        let ServiceInfo::Registered(reg) = &guard["B"] else {
+            panic!("B should be registered");
+        };
+        assert_eq!(reg.replicas().len(), 3);
+    }
+
+    // Container "b1" dies — host re-registers with only "b2"
+    server
+        .apply_services_list(ip(2, 2, 2, 2), &[("B".into(), 8080, Some("b2".into()))])
+        .await
+        .expect("apply_services_list failed");
+
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg) = &guard["B"] else {
+        panic!("B should still be registered");
+    };
+
+    // "b1" removed, "b2" and 4.4.4.4 survive → 2 replicas left
+    assert_eq!(reg.replicas().len(), 2, "should have 2 replicas left");
+    assert!(
+        reg.has_replica_on_ip(ip(2, 2, 2, 2)),
+        "2.2.2.2 should still have a replica"
+    );
+    assert!(
+        reg.has_replica_on_ip(ip(4, 4, 4, 4)),
+        "4.4.4.4 should still have a replica"
+    );
+
+    // The surviving 2.2.2.2 replica should be "b2"
+    let on_2: Vec<_> = reg
+        .replicas()
+        .iter()
+        .filter(|r| r.ip() == ip(2, 2, 2, 2))
+        .collect();
+    assert_eq!(on_2.len(), 1, "only one replica on 2.2.2.2");
+    assert_eq!(on_2[0].docker_container(), Some("b2"));
 }

@@ -112,6 +112,8 @@ impl NullnetGrpcImpl {
         };
 
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
+
+        // Sticky session: check if this client is already connected to a replica
         if let Some(upstream) = registered.is_client_setup(&proxy_client) {
             println!("'{client_ip}' ---> '{service_name}' is already set up");
 
@@ -124,9 +126,29 @@ impl NullnetGrpcImpl {
             return Ok(Response::new(upstream));
         }
 
-        let (_, service_port) = registered.ip_port();
+        // Least-clients: pick the replica with fewest active clients
+        let (service_ip, service_port, service_docker) = {
+            let guard = self.services.read().await;
+            let reg = match guard.get(&service_name) {
+                Some(ServiceInfo::Registered(reg)) => reg,
+                _ => Err("Service is not registered").handle_err(location!())?,
+            };
+            let replica = reg.pick_replica_least_clients();
+            (
+                replica.ip(),
+                replica.port(),
+                replica.docker_container().map(String::from),
+            )
+        };
+
         let upstream_ip = self
-            .setup_proxy_chain(&service_name, proxy_ip, &client_ip.to_string())
+            .setup_proxy_chain(
+                &service_name,
+                proxy_ip,
+                &client_ip.to_string(),
+                service_ip,
+                service_docker.as_deref(),
+            )
             .await?;
 
         Ok(Response::new(Upstream {
@@ -174,6 +196,8 @@ impl NullnetGrpcImpl {
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
+        service_ip: IpAddr,
+        service_docker: Option<&str>,
     ) -> Result<Ipv4Addr, Error> {
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
 
@@ -185,8 +209,12 @@ impl NullnetGrpcImpl {
         let ServiceInfo::Registered(registered) = service_info else {
             Err("Service is not registered").handle_err(location!())?
         };
-        let service_ip = registered.ip_port().0;
-        let dep_chain = registered.dependency_chain(service_name.to_string(), &guard);
+        let dep_chain = registered.dependency_chain(
+            service_name.to_string(),
+            service_ip,
+            service_docker,
+            &guard,
+        );
         drop(guard);
 
         let mut dep_chain: Vec<RegisteredEdge> = dep_chain
@@ -201,8 +229,10 @@ impl NullnetGrpcImpl {
         dep_chain.push(RegisteredEdge::new(
             proxy_ip,
             proxy_client,
+            None,
             service_ip,
             Client::new(service_name.to_string(), None),
+            service_docker.map(String::from),
         ));
 
         self.net_chain_setup(dep_chain).await
@@ -218,10 +248,10 @@ impl NullnetGrpcImpl {
         let changes = detect_services_list_changes(&services_mut, sender_ip, service_list);
         apply_changes(changes, &mut services_mut, None, &self.orchestrator).await;
 
-        // re-register services that are still present
+        // add/update replicas for services that are present
         for (name, port, docker_container) in service_list {
             services_mut.entry(name.clone()).and_modify(|si| {
-                si.register(sender_ip, *port, docker_container.clone());
+                si.add_replica(sender_ip, *port, docker_container.clone());
             });
         }
 
@@ -236,6 +266,8 @@ impl NullnetGrpcImpl {
         for edge in dep_chain {
             let (client_ethernet, client) = edge.client;
             let (server_ethernet, server) = edge.server;
+            let client_docker = edge.client_docker;
+            let server_docker = edge.server_docker;
 
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
@@ -253,19 +285,13 @@ impl NullnetGrpcImpl {
                     return None;
                 }
                 // reserve the slot so concurrent requests see it as in-progress
-                reg.add_client(client.clone(), ClientInfo::placeholder());
+                reg.add_client_to_replica(
+                    server_ethernet,
+                    server_docker.as_deref(),
+                    client.clone(),
+                    ClientInfo::placeholder(client_ethernet),
+                );
 
-                // look up docker_container for the server side
-                let server_docker = reg.docker_container().map(String::from);
-
-                // look up docker_container for the client side
-                let client_docker = services_guard.get(client.name()).and_then(|si| {
-                    if let ServiceInfo::Registered(r) = si {
-                        r.docker_container().map(String::from)
-                    } else {
-                        None
-                    }
-                });
                 drop(services_guard);
 
                 let Some(net_id) = orchestrator.allocate_net_id().await else {
@@ -274,7 +300,7 @@ impl NullnetGrpcImpl {
                     if let Some(ServiceInfo::Registered(reg)) =
                         services.write().await.get_mut(server.name())
                     {
-                        reg.clients_mut().remove(&client);
+                        reg.remove_client(&client);
                     }
                     return None;
                 };
@@ -312,7 +338,7 @@ impl NullnetGrpcImpl {
                     if let Some(ServiceInfo::Registered(reg)) =
                         services.write().await.get_mut(server.name())
                     {
-                        reg.clients_mut().remove(&client);
+                        reg.remove_client(&client);
                     }
                     return None;
                 }
@@ -328,13 +354,19 @@ impl NullnetGrpcImpl {
                 if let Some(ServiceInfo::Registered(reg)) = guard.get_mut(server.name()) {
                     let time_ms = init_time.elapsed().as_millis();
                     let ci = ClientInfo::new(
+                        client_ethernet,
                         net_ip_client,
                         net_ip_server,
                         net_id,
                         time_ms,
-                        client_docker,
+                        client_docker.clone(),
                     );
-                    reg.add_client(client.clone(), ci);
+                    reg.add_client_to_replica(
+                        server_ethernet,
+                        server_docker.as_deref(),
+                        client.clone(),
+                        ci,
+                    );
                     reg.add_chain(&client);
                 } else {
                     // service was unregistered during setup — teardown NETs

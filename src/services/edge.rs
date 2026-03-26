@@ -4,18 +4,24 @@ use std::net::IpAddr;
 pub(crate) struct Edge {
     pub(crate) client: (Option<IpAddr>, Client),
     pub(crate) server: (Option<IpAddr>, Client),
+    pub(crate) client_docker: Option<String>,
+    pub(crate) server_docker: Option<String>,
 }
 
 impl Edge {
     pub(crate) fn new(
         client_ip: Option<IpAddr>,
         client: Client,
+        client_docker: Option<String>,
         server_ip: Option<IpAddr>,
         server: Client,
+        server_docker: Option<String>,
     ) -> Self {
         Self {
             client: (client_ip, client),
             server: (server_ip, server),
+            client_docker,
+            server_docker,
         }
     }
 
@@ -24,6 +30,8 @@ impl Edge {
             Some(RegisteredEdge {
                 client: (client_ip, self.client.1),
                 server: (server_ip, self.server.1),
+                client_docker: self.client_docker,
+                server_docker: self.server_docker,
             })
         } else {
             None
@@ -34,18 +42,24 @@ impl Edge {
 pub(crate) struct RegisteredEdge {
     pub(crate) client: (IpAddr, Client),
     pub(crate) server: (IpAddr, Client),
+    pub(crate) client_docker: Option<String>,
+    pub(crate) server_docker: Option<String>,
 }
 
 impl RegisteredEdge {
     pub(crate) fn new(
         client_ip: IpAddr,
         client: Client,
+        client_docker: Option<String>,
         server_ip: IpAddr,
         server: Client,
+        server_docker: Option<String>,
     ) -> Self {
         Self {
             client: (client_ip, client),
             server: (server_ip, server),
+            client_docker,
+            server_docker,
         }
     }
 }
