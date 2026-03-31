@@ -30,11 +30,32 @@ impl Clients {
 pub(crate) struct Client {
     name: String,
     proxy: Option<IpAddr>,
+    /// Source replica identity for service-to-service edges.
+    /// A VXLAN connects two specific replicas, so A(a1)→B(b1) and A(a2)→B(b1)
+    /// are distinct connections that need separate entries.
+    replica: Option<(IpAddr, Option<String>)>,
 }
 
 impl Client {
     pub(crate) fn new(name: String, proxy: Option<IpAddr>) -> Self {
-        Self { name, proxy }
+        Self {
+            name,
+            proxy,
+            replica: None,
+        }
+    }
+
+    /// Create a service-to-service client identified by its source replica.
+    pub(crate) fn new_service(
+        name: String,
+        replica_ip: IpAddr,
+        replica_docker: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            proxy: None,
+            replica: Some((replica_ip, replica_docker)),
+        }
     }
 
     pub(crate) fn name(&self) -> &str {
