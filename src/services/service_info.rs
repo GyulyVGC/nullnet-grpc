@@ -225,20 +225,30 @@ impl RegisteredServiceInfo {
         }
     }
 
-    /// Decrement active chains for a client. When the count reaches zero,
-    /// tear down the network link using the IPs stored at setup time.
+    /// Decrement active chains for a client across all replicas.
+    /// The same client may exist on multiple replicas (one edge per replica).
+    /// Distributes decrements across replicas; tears down each edge whose
+    /// count reaches zero.
     pub(crate) async fn remove_chains(
         &mut self,
         client: &Client,
         num_chains: usize,
         orchestrator: &Orchestrator,
     ) {
-        let mut net_to_remove = None;
+        let mut remaining = num_chains;
+        let mut to_teardown: Vec<(IpAddr, u32, Option<String>, IpAddr, Option<String>)> =
+            Vec::new();
+
         for replica in &mut self.replicas {
+            if remaining == 0 {
+                break;
+            }
             if let Some(client_info) = replica.clients.clients_mut().get_mut(client) {
-                client_info.remove_active_chains(num_chains);
+                let to_remove = remaining.min(client_info.active_chains());
+                client_info.remove_active_chains(to_remove);
+                remaining -= to_remove;
                 if client_info.active_chains() == 0 {
-                    net_to_remove = Some((
+                    to_teardown.push((
                         client_info.client_ip(),
                         client_info.net_id(),
                         client_info.docker_container().cloned(),
@@ -246,18 +256,21 @@ impl RegisteredServiceInfo {
                         replica.docker_container.clone(),
                     ));
                 }
-                break;
             }
         }
 
-        if let Some((client_ip, net_id, client_docker, server_ip, server_docker)) = net_to_remove {
+        for (_, _, _, _, _) in &to_teardown {
+            // Remove the client entry from replicas whose active_chains reached 0
             for replica in &mut self.replicas {
-                if replica.clients.clients().contains_key(client) {
-                    replica.clients.clients_mut().remove(client);
-                    break;
+                if let Some(ci) = replica.clients.clients().get(client) {
+                    if ci.active_chains() == 0 {
+                        replica.clients.clients_mut().remove(client);
+                    }
                 }
             }
+        }
 
+        for (client_ip, net_id, client_docker, server_ip, server_docker) in to_teardown {
             orchestrator
                 .send_net_teardown(client_ip, client_docker, server_ip, server_docker, net_id)
                 .await;
@@ -298,6 +311,19 @@ impl RegisteredServiceInfo {
             }
         }
         None
+    }
+
+    /// Check if a specific replica already has this client.
+    pub(crate) fn is_client_on_replica(
+        &self,
+        client: &Client,
+        ip: IpAddr,
+        docker: Option<&str>,
+    ) -> bool {
+        self.replicas
+            .iter()
+            .filter(|r| r.matches_identity(ip, docker))
+            .any(|r| r.clients.is_client_setup(client).is_some())
     }
 
     pub(crate) fn remove_client(&mut self, client: &Client) {

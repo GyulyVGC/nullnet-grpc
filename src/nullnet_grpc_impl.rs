@@ -274,13 +274,24 @@ impl NullnetGrpcImpl {
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
-                // add chain and check if the link is already set up
                 let mut services_guard = services.write().await;
                 let Some(ServiceInfo::Registered(reg)) = services_guard.get_mut(server.name())
                 else {
                     return None;
                 };
-                if reg.is_client_setup(&client).is_some() {
+                // Proxy edges: reuse if this client is already connected anywhere (stickiness).
+                // Dep edges: reuse only if this exact (client, server_replica) pair exists,
+                // so each proxy chain can independently pick a different replica.
+                let already_setup = if client.is_proxy().is_some() {
+                    reg.is_client_setup(&client).is_some()
+                } else {
+                    reg.is_client_on_replica(
+                        &client,
+                        server_ethernet,
+                        server_docker.as_deref(),
+                    )
+                };
+                if already_setup {
                     reg.add_chain(&client);
                     return None;
                 }
