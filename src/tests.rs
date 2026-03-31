@@ -781,19 +781,33 @@ async fn proxy_timeout_config_remove_timeout_A() {
 
 const MULTI_REPLICA: &str = "multi_replica";
 
+/// Replicas:
+///   A: "a1" and "a2" on 1.1.1.1 (Docker Swarm)
+///   B: "b1" on 2.2.2.2, standalone on 4.4.4.4, "b2" on 2.2.2.2
+///   C: standalone on 3.3.3.3
+///   D: standalone on 6.6.6.6
 async fn multi_replica_setup() -> NullnetGrpcImpl {
     let services = load_fixture(MULTI_REPLICA).await;
     let server = NullnetGrpcImpl::new_for_test(services);
 
-    // A at 1.1.1.1, C at 3.3.3.3
-    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("C", ip(3, 3, 3, 3))]);
-    register_services(&server, &ip_map, 8080).await;
+    // A: 2 replicas on same IP (Docker Swarm containers "a1", "a2")
+    {
+        let mut services = server.services().write().await;
+        services
+            .get_mut("A")
+            .unwrap()
+            .add_replica(ip(1, 1, 1, 1), 8080, Some("a1".into()));
+        services
+            .get_mut("A")
+            .unwrap()
+            .add_replica(ip(1, 1, 1, 1), 8080, Some("a2".into()));
+    }
+    server
+        .orchestrator()
+        .register_fake_client(ip(1, 1, 1, 1))
+        .await;
 
-    // B has 3 replicas across 2 IPs:
-    //   2.2.2.2 "b1", 4.4.4.4 (standalone), 2.2.2.2 "b2" (same host, Docker Swarm)
-    // Insertion order matters for least-clients tie-breaking (first with min wins),
-    // so 4.4.4.4 is inserted between the two Docker Swarm containers to ensure
-    // least-clients distributes across IPs.
+    // B: 3 replicas — insertion order matters for least-clients tie-breaking
     {
         let mut services = server.services().write().await;
         services
@@ -816,6 +830,32 @@ async fn multi_replica_setup() -> NullnetGrpcImpl {
     server
         .orchestrator()
         .register_fake_client(ip(4, 4, 4, 4))
+        .await;
+
+    // C: 1 replica on 3.3.3.3
+    {
+        let mut services = server.services().write().await;
+        services
+            .get_mut("C")
+            .unwrap()
+            .add_replica(ip(3, 3, 3, 3), 8080, None);
+    }
+    server
+        .orchestrator()
+        .register_fake_client(ip(3, 3, 3, 3))
+        .await;
+
+    // D: 1 replica on 6.6.6.6
+    {
+        let mut services = server.services().write().await;
+        services
+            .get_mut("D")
+            .unwrap()
+            .add_replica(ip(6, 6, 6, 6), 8080, None);
+    }
+    server
+        .orchestrator()
+        .register_fake_client(ip(6, 6, 6, 6))
         .await;
 
     server
@@ -879,7 +919,6 @@ async fn multi_replica_least_clients() {
     setup_proxy_chain(&server, "C", proxy1, "10.0.0.2").await;
 
     let guard = server.services().read().await;
-    assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
 
     let ServiceInfo::Registered(reg_b) = &guard["B"] else {
         panic!("B should be registered");
@@ -954,11 +993,6 @@ async fn multi_replica_partial_disconnect() {
     // A→B, proxy→A, C→B, proxy→C = 4 NET IDs
     assert_net_ids_in_use(&server, 4).await;
 
-    {
-        let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
-    }
-
     // Disconnect 2.2.2.2 — removes "b1" and "b2" replicas.
     // Only A→B (on "b1") is affected; C→B (on 4.4.4.4) survives.
     server
@@ -1012,11 +1046,6 @@ async fn multi_replica_full_disconnect() {
 
     setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
     setup_proxy_chain(&server, "C", proxy1, "10.0.0.2").await;
-
-    {
-        let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
-    }
 
     // Disconnect 2.2.2.2 (partial) — removes 2 of 3 replicas, cascades chains through B
     server
@@ -1196,129 +1225,28 @@ async fn multi_replica_single_container_removed() {
     assert_eq!(on_2[0].docker_container(), Some("b2"));
 }
 
-// ===========================================================================
-// Comprehensive multi-replica tests: A→B, C→B, D→B
-//
-// Richer topology: A has 2 replicas (same IP, Docker Swarm), B has 3 replicas
-// (mixed IPs), C has 1 replica (overloaded), D has 1 replica (minimal load).
-// Two proxies drive 5 chains with mixed load on B's replicas.
-// Tests partial disconnections at both the dependency level (B) and the
-// first-step level (A), on same and different IPs.
-// ===========================================================================
-
-/// Comprehensive setup: A→B, C→B, D→B.
+/// Helper: set up all 5 proxy chains for the multi-replica topology.
 ///
-/// Replicas:
-///   A: "a1" and "a2" on 1.1.1.1 (Docker Swarm)
-///   B: "b1" on 2.2.2.2, standalone on 4.4.4.4, "b2" on 2.2.2.2
-///   C: standalone on 3.3.3.3
-///   D: standalone on 6.6.6.6
+/// Chain order is chosen so A's two replicas land on different B replicas:
+///   proxy1→A(a1)→B(b1), proxy1→C→B(4.4.4.4), proxy2→A(a2)→B(b2),
+///   proxy1→D→B(b1), proxy2→C→B(4.4.4.4 reuse, add_chain)
 ///
-/// D is added programmatically (not in services.toml).
-async fn multi_replica_comprehensive_setup() -> NullnetGrpcImpl {
-    let services = load_fixture(MULTI_REPLICA).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    // Add D (depends on B) programmatically
-    {
-        let mut services = server.services().write().await;
-        services.insert(
-            "D".to_string(),
-            ServiceInfo::new(vec!["B".to_string()], None),
-        );
-    }
-
-    // A: 2 replicas on same IP (Docker Swarm containers "a1", "a2")
-    {
-        let mut services = server.services().write().await;
-        services
-            .get_mut("A")
-            .unwrap()
-            .add_replica(ip(1, 1, 1, 1), 8080, Some("a1".into()));
-        services
-            .get_mut("A")
-            .unwrap()
-            .add_replica(ip(1, 1, 1, 1), 8080, Some("a2".into()));
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(1, 1, 1, 1))
-        .await;
-
-    // B: 3 replicas — insertion order matters for least-clients tie-breaking
-    {
-        let mut services = server.services().write().await;
-        services
-            .get_mut("B")
-            .unwrap()
-            .add_replica(ip(2, 2, 2, 2), 8080, Some("b1".into()));
-        services
-            .get_mut("B")
-            .unwrap()
-            .add_replica(ip(4, 4, 4, 4), 8080, None);
-        services
-            .get_mut("B")
-            .unwrap()
-            .add_replica(ip(2, 2, 2, 2), 8080, Some("b2".into()));
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(2, 2, 2, 2))
-        .await;
-    server
-        .orchestrator()
-        .register_fake_client(ip(4, 4, 4, 4))
-        .await;
-
-    // C: 1 replica on 3.3.3.3
-    {
-        let mut services = server.services().write().await;
-        services
-            .get_mut("C")
-            .unwrap()
-            .add_replica(ip(3, 3, 3, 3), 8080, None);
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(3, 3, 3, 3))
-        .await;
-
-    // D: 1 replica on 6.6.6.6
-    {
-        let mut services = server.services().write().await;
-        services
-            .get_mut("D")
-            .unwrap()
-            .add_replica(ip(6, 6, 6, 6), 8080, None);
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(6, 6, 6, 6))
-        .await;
-
-    server
-}
-
-/// Helper: set up all 5 proxy chains for the comprehensive topology.
-///
-/// Chain distribution (least-clients):
-///   proxy1→A(a1)→B(b1), proxy1→C→B(4.4.4.4), proxy1→D→B(b2),
-///   proxy2→A(a2)→B(b1), proxy2→C→B(4.4.4.4 reuse, add_chain)
-///
-/// B's load: b1 has A(a1)+A(a2), 4.4.4.4 has C(chains=2), b2 has D(chains=1)
-async fn setup_comprehensive_chains(server: &NullnetGrpcImpl) {
+/// B's load: b1 has A(a1)+D, 4.4.4.4 has C(chains=2), b2 has A(a2)
+async fn setup_all_chains(server: &NullnetGrpcImpl) {
     let proxy1 = ip(5, 5, 5, 5);
     let proxy2 = ip(7, 7, 7, 7);
     server.orchestrator().register_fake_client(proxy1).await;
     server.orchestrator().register_fake_client(proxy2).await;
 
-    // proxy1 chains: A→B(b1), C→B(4.4.4.4), D→B(b2)
+    // proxy1→A(a1)→B(b1):  all B replicas at 0, b1 wins tie
     setup_proxy_chain(server, "A", proxy1, "10.0.0.1").await;
+    // proxy1→C→B(4.4.4.4): b1=1, 4.4.4.4=0, b2=0 → 4.4.4.4
     setup_proxy_chain(server, "C", proxy1, "10.0.0.2").await;
-    setup_proxy_chain(server, "D", proxy1, "10.0.0.3").await;
-
-    // proxy2 chains: A→B(b1 reuse, add_chain), C→B(4.4.4.4 reuse, add_chain)
+    // proxy2→A(a2)→B(b2):  b1=1, 4.4.4.4=1, b2=0 → b2
     setup_proxy_chain(server, "A", proxy2, "10.0.0.4").await;
+    // proxy1→D→B(b1):      b1=1, 4.4.4.4=1, b2=1 → b1 (tie)
+    setup_proxy_chain(server, "D", proxy1, "10.0.0.3").await;
+    // proxy2→C→B(4.4.4.4): C already on 4.4.4.4 → add_chain
     setup_proxy_chain(server, "C", proxy2, "10.0.0.5").await;
 }
 
@@ -1327,16 +1255,16 @@ async fn setup_comprehensive_chains(server: &NullnetGrpcImpl) {
 ///
 /// Each A replica (a1, a2) creates a separate VXLAN to B since they are
 /// distinct physical connections. B ends up with 4 client entries:
-///   b1: A(a1) + A(a2)  — overloaded (2 VXLANs from different A replicas)
+///   b1: A(a1) + D  — overloaded
 ///   4.4.4.4: C (chains=2, shared across both proxy chains)
-///   b2: D (chains=1)
+///   b2: A(a2)
 #[tokio::test]
 async fn multi_replica_comprehensive_register() {
-    let server = multi_replica_comprehensive_setup().await;
-    setup_comprehensive_chains(&server).await;
+    let server = multi_replica_setup().await;
+    setup_all_chains(&server).await;
 
     let guard = server.services().read().await;
-    assert_graphviz(&guard, MULTI_REPLICA, "comprehensive_start.dot");
+    assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
 
     // A: 2 replicas, 2 proxy clients (one per replica)
     let ServiceInfo::Registered(reg_a) = &guard["A"] else {
@@ -1355,15 +1283,15 @@ async fn multi_replica_comprehensive_register() {
     assert_eq!(
         reg_b.client_count(),
         4,
-        "B should have 4 client entries: A(a1)+A(a2) on b1, C on 4.4.4.4, D on b2"
+        "B should have 4 client entries: A(a1)+D on b1, C on 4.4.4.4, A(a2) on b2"
     );
-    // b1 is overloaded (2 clients: A(a1) + A(a2)), others have 1 each
+    // b1 is overloaded (2 clients: A(a1) + D), b2 has A(a2), 4.4.4.4 has C
     let b1 = reg_b
         .replicas()
         .iter()
         .find(|r| r.ip() == ip(2, 2, 2, 2) && r.docker_container() == Some("b1"))
         .expect("b1 should exist");
-    assert_eq!(b1.clients().len(), 2, "b1 should have 2 clients: A(a1) + A(a2)");
+    assert_eq!(b1.clients().len(), 2, "b1 should have 2 clients: A(a1) + D");
     let on_444 = reg_b
         .replicas()
         .iter()
@@ -1375,7 +1303,7 @@ async fn multi_replica_comprehensive_register() {
         .iter()
         .find(|r| r.ip() == ip(2, 2, 2, 2) && r.docker_container() == Some("b2"))
         .expect("b2 should exist");
-    assert_eq!(b2.clients().len(), 1, "b2 should have 1 client (D)");
+    assert_eq!(b2.clients().len(), 1, "b2 should have 1 client: A(a2)");
 
     // C: 1 replica, 2 proxy clients (overloaded)
     let ServiceInfo::Registered(reg_c) = &guard["C"] else {
@@ -1400,18 +1328,18 @@ async fn multi_replica_comprehensive_register() {
 /// Same-IP container disconnect on dependency B: container "b1" on 2.2.2.2
 /// dies while "b2" (same IP) survives.
 ///
-/// b1 hosted A(a1)→B and A(a2)→B. teardown_single_replica finds "A" as a
-/// service client on b1 → teardown_chain("A") tears down both proxies and
-/// both A→B edges. C→B on 4.4.4.4 and D→B on b2 both survive.
+/// b1 hosted A(a1)→B and D→B. Only chains through a1 and D are torn down.
+/// proxy2→A(a2)→B(b2) survives because its dep chain goes through b2.
+/// C→B on 4.4.4.4 also survives.
 #[tokio::test]
 async fn multi_replica_b_same_ip_container_disconnect() {
-    let server = multi_replica_comprehensive_setup().await;
-    setup_comprehensive_chains(&server).await;
+    let server = multi_replica_setup().await;
+    setup_all_chains(&server).await;
     assert_net_ids_in_use(&server, 9).await;
 
     {
         let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "comprehensive_start.dot");
+        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
     }
 
     // Container "b1" dies — host 2.2.2.2 re-registers with only "b2"
@@ -1427,8 +1355,7 @@ async fn multi_replica_b_same_ip_container_disconnect() {
     assert_graphviz(&guard, MULTI_REPLICA, "after_b_same_ip_disconnect.dot");
 
     // B: 2 replicas left (b2 + 4.4.4.4).
-    // A fully torn down (both A(a1)→B and A(a2)→B were on b1).
-    // C→B on 4.4.4.4 and D→B on b2 survive.
+    // A(a1)→B and D→B on b1 torn down. A(a2)→B on b2 and C→B on 4.4.4.4 survive.
     let ServiceInfo::Registered(reg_b) = &guard["B"] else {
         panic!("B should still be registered");
     };
@@ -1445,12 +1372,16 @@ async fn multi_replica_b_same_ip_container_disconnect() {
     assert_eq!(
         reg_b.client_count(),
         2,
-        "C→B on 4.4.4.4 and D→B on b2 should survive"
+        "A(a2)→B on b2 and C→B on 4.4.4.4 should survive"
     );
 
-    // A: all proxy chains torn down (both A→B edges were on b1)
+    // A: only proxy1→A(a1) torn down; proxy2→A(a2) survives (its chain goes through b2)
     if let ServiceInfo::Registered(reg_a) = &guard["A"] {
-        assert!(!reg_a.has_clients(), "A should have no clients after b1 removal");
+        assert_eq!(
+            reg_a.client_count(),
+            1,
+            "proxy2→A(a2) should survive (chain through b2)"
+        );
     }
 
     // C: both proxies survive (C→B on 4.4.4.4 unaffected by b1 removal)
@@ -1458,13 +1389,13 @@ async fn multi_replica_b_same_ip_container_disconnect() {
         assert_eq!(reg_c.client_count(), 2, "C should still have 2 proxy clients");
     }
 
-    // D: proxy survives (D→B on b2 at same IP, but different container)
+    // D: proxy torn down (D→B was on b1)
     if let ServiceInfo::Registered(reg_d) = &guard["D"] {
-        assert_eq!(reg_d.client_count(), 1, "D should still have its proxy client");
+        assert!(!reg_d.has_clients(), "D should have no clients after b1 removal");
     }
 
-    // Freed: A(a1)→B, A(a2)→B, proxy1→A, proxy2→A = 4
-    // Remaining: C→B, proxy1→C, proxy2→C, D→B, proxy1→D = 5
+    // Freed: A(a1)→B, D→B, proxy1→A, proxy1→D = 4
+    // Remaining: A(a2)→B, C→B, proxy2→A, proxy1→C, proxy2→C = 5
     drop(guard);
     assert_net_ids_in_use(&server, 5).await;
 }
@@ -1472,16 +1403,16 @@ async fn multi_replica_b_same_ip_container_disconnect() {
 /// Different-IP disconnect on dependency B: node 4.4.4.4 goes offline.
 ///
 /// C→B was on 4.4.4.4 → teardown_chain("C") tears down C's chain.
-/// A(a1)→B and A(a2)→B on b1, and D→B on b2 all survive.
+/// A(a1)→B on b1, A(a2)→B on b2, and D→B on b1 all survive.
 #[tokio::test]
 async fn multi_replica_b_different_ip_disconnect() {
-    let server = multi_replica_comprehensive_setup().await;
-    setup_comprehensive_chains(&server).await;
+    let server = multi_replica_setup().await;
+    setup_all_chains(&server).await;
     assert_net_ids_in_use(&server, 9).await;
 
     {
         let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "comprehensive_start.dot");
+        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
     }
 
     // Disconnect 4.4.4.4 — removes B's standalone replica
@@ -1495,7 +1426,7 @@ async fn multi_replica_b_different_ip_disconnect() {
 
     // B: 2 replicas left (b1 + b2 on 2.2.2.2).
     // C fully torn down (was on 4.4.4.4).
-    // A(a1)→B + A(a2)→B on b1 and D→B on b2 survive.
+    // A(a1)+D on b1 and A(a2) on b2 survive.
     let ServiceInfo::Registered(reg_b) = &guard["B"] else {
         panic!("B should still be registered");
     };
@@ -1505,10 +1436,10 @@ async fn multi_replica_b_different_ip_disconnect() {
     assert_eq!(
         reg_b.client_count(),
         3,
-        "A(a1)→B, A(a2)→B on b1 and D→B on b2 should survive"
+        "A(a1)+D on b1 and A(a2) on b2 should survive"
     );
 
-    // A: both proxies survive (A→B edges on b1 unaffected)
+    // A: both proxies survive (A→B edges on b1 and b2 unaffected)
     if let ServiceInfo::Registered(reg_a) = &guard["A"] {
         assert_eq!(reg_a.client_count(), 2, "A should still have 2 proxy clients");
     }
@@ -1518,7 +1449,7 @@ async fn multi_replica_b_different_ip_disconnect() {
         assert!(!reg_c.has_clients(), "C should have no clients after 4.4.4.4 removal");
     }
 
-    // D: proxy survives (D→B on b2 at 2.2.2.2)
+    // D: proxy survives (D→B on b1 at 2.2.2.2)
     if let ServiceInfo::Registered(reg_d) = &guard["D"] {
         assert_eq!(reg_d.client_count(), 1, "D should still have its proxy client");
     }
@@ -1536,13 +1467,13 @@ async fn multi_replica_b_different_ip_disconnect() {
 /// and the underlying A→B dependency is unaffected.
 #[tokio::test]
 async fn multi_replica_first_step_container_disconnect() {
-    let server = multi_replica_comprehensive_setup().await;
-    setup_comprehensive_chains(&server).await;
+    let server = multi_replica_setup().await;
+    setup_all_chains(&server).await;
     assert_net_ids_in_use(&server, 9).await;
 
     {
         let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "comprehensive_start.dot");
+        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
     }
 
     // Container "a1" dies — host 1.1.1.1 re-registers with only "a2"

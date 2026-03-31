@@ -2,7 +2,7 @@ use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::Upstream;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::edge::Edge;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -362,34 +362,30 @@ impl RegisteredServiceInfo {
             .min()
     }
 
-    /// Return unique service names (non-proxy clients) connected to replicas at the given IP.
-    pub(crate) fn service_clients_on_ip(&self, ip: IpAddr) -> Vec<String> {
-        let names: HashSet<String> = self
-            .replicas
+    /// Return service-to-service client entries connected to replicas at the given IP.
+    pub(crate) fn service_clients_on_ip(&self, ip: IpAddr) -> Vec<Client> {
+        self.replicas
             .iter()
             .filter(|r| r.ip == ip)
             .flat_map(|r| r.clients.clients().keys())
             .filter(|c| c.is_proxy().is_none())
-            .map(|c| c.name().to_string())
-            .collect();
-        names.into_iter().collect()
+            .cloned()
+            .collect()
     }
 
-    /// Return unique service names (non-proxy clients) connected to a specific replica.
+    /// Return service-to-service client entries connected to a specific replica.
     pub(crate) fn service_clients_on_replica(
         &self,
         ip: IpAddr,
         docker_container: Option<&str>,
-    ) -> Vec<String> {
-        let names: HashSet<String> = self
-            .replicas
+    ) -> Vec<Client> {
+        self.replicas
             .iter()
             .filter(|r| r.matches_identity(ip, docker_container))
             .flat_map(|r| r.clients.clients().keys())
             .filter(|c| c.is_proxy().is_none())
-            .map(|c| c.name().to_string())
-            .collect();
-        names.into_iter().collect()
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn has_replica_on_ip(&self, ip: IpAddr) -> bool {

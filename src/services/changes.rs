@@ -351,8 +351,10 @@ async fn teardown_partial_replicas(
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
 ) {
-    // Service-to-service clients on the affected replicas — tear down their originating chains
-    let affected: Vec<String> = {
+    // Service-to-service clients on the affected replicas.
+    // Each carries its source replica identity, so we tear down only the
+    // proxy chains that route through that specific source replica.
+    let affected: Vec<Client> = {
         let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
             return;
         };
@@ -363,8 +365,16 @@ async fn teardown_partial_replicas(
         }
     };
 
-    for sn in affected {
-        teardown_chain(&sn, services, orchestrator, ProxyFilter::All).await;
+    for client in affected {
+        if let Some((src_ip, src_docker)) = client.replica_identity() {
+            teardown_chain(
+                client.name(),
+                services,
+                orchestrator,
+                ProxyFilter::OnReplica(src_ip, src_docker),
+            )
+            .await;
+        }
     }
 
     // Proxy clients on the affected replicas — tear down their chains

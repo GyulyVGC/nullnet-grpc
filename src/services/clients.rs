@@ -73,6 +73,13 @@ impl Client {
     pub(crate) fn is_proxy(&self) -> Option<IpAddr> {
         self.proxy
     }
+
+    /// The source replica identity for service-to-service clients.
+    pub(crate) fn replica_identity(&self) -> Option<(IpAddr, Option<&str>)> {
+        self.replica
+            .as_ref()
+            .map(|(ip, docker)| (*ip, docker.as_deref()))
+    }
 }
 
 #[derive(Clone, Debug)]
