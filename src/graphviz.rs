@@ -21,8 +21,8 @@ pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String
     for (name, info) in entries {
         let style = info.graphviz_style();
         let label = info.graphviz_label(name);
-        let _ = writeln!(graphviz, "\t\"{name}\" [label=\"{label}\"] {style};")
-            .handle_err(location!());
+        let _ =
+            writeln!(graphviz, "\t\"{name}\" [label=\"{label}\"] {style};").handle_err(location!());
         if let ServiceInfo::Registered(registered) = info {
             let mut edges: Vec<_> = registered
                 .replicas()

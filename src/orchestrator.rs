@@ -129,12 +129,12 @@ impl Orchestrator {
         server_docker: Option<String>,
         net_id: u32,
     ) {
-        for (dest, docker) in [(client, client_docker), (server, server_docker)] {
+        for (dest, side, docker) in [(client, "c", client_docker), (server, "s", server_docker)] {
             let outbound = self.clients.read().await.get(&dest).cloned();
             if let Some(outbound) = outbound {
                 println!("Sending network {net_id} teardown to client {dest}");
 
-                let message = NET_TYPE.teardown(net_id, docker);
+                let message = NET_TYPE.teardown(net_id, side, docker);
 
                 let _ = outbound.send(Ok(message)).await.handle_err(location!());
             }

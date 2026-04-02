@@ -29,7 +29,12 @@ impl Net {
         }
     }
 
-    pub(crate) fn teardown(self, net_id: u32, docker_container: Option<String>) -> NetMessage {
+    pub(crate) fn teardown(
+        self,
+        net_id: u32,
+        side: &str,
+        docker_container: Option<String>,
+    ) -> NetMessage {
         match self {
             Net::Vlan => NetMessage {
                 message: Some(net_message::Message::VlanTeardown(VlanTeardown {
@@ -39,6 +44,7 @@ impl Net {
             Net::Vxlan => NetMessage {
                 message: Some(net_message::Message::VxlanTeardown(VxlanTeardown {
                     vxlan_id: net_id,
+                    side: side.to_string(),
                     docker_container,
                 })),
             },
@@ -114,7 +120,7 @@ impl Net {
             .handle_err(location!())
             .ok()?;
 
-        let (ns_net, br_net, docker_container) = if remote_server_name.is_some() {
+        let (ns_net, br_net, docker_container, side) = if remote_server_name.is_some() {
             // this is for client
             let ns_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, c + 3), 29)
                 .handle_err(location!())
@@ -122,10 +128,10 @@ impl Net {
             let br_net_client = Ipv4Network::new(Ipv4Addr::new(10, a, b, c + 4), 29)
                 .handle_err(location!())
                 .ok()?;
-            (ns_net_client, br_net_client, client_docker)
+            (ns_net_client, br_net_client, client_docker, "c")
         } else {
             // this is for server
-            (ns_net_server, br_net_server, server_docker)
+            (ns_net_server, br_net_server, server_docker, "s")
         };
 
         let server_net_ip = if is_server_docker {
@@ -145,9 +151,9 @@ impl Net {
                 message: Some(net_message::Message::VxlanSetup(VxlanSetup {
                     msg_id: Some(MsgId { id: msg_id }),
                     vxlan_id,
-                    ns_name: format!("ns_{vxlan_id}"),
+                    ns_name: format!("ns_{vxlan_id}_{side}"),
                     ns_net: ns_net.to_string(),
-                    br_name: format!("br_{vxlan_id}"),
+                    br_name: format!("br_{vxlan_id}_{side}"),
                     br_net: br_net.to_string(),
                     local_ip: dest.to_string(),
                     remote_ip: remote.to_string(),

@@ -71,7 +71,8 @@ message VxlanSetup {
 
 message VxlanTeardown {
   uint32 vxlan_id = 1;
-  optional string docker_container = 2;
+  string side = 2;
+  optional string docker_container = 3;
 }
 
 message MsgId {

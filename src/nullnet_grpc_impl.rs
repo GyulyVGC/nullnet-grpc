@@ -285,11 +285,7 @@ impl NullnetGrpcImpl {
                 let already_setup = if client.is_proxy().is_some() {
                     reg.is_client_setup(&client).is_some()
                 } else {
-                    reg.is_client_on_replica(
-                        &client,
-                        server_ethernet,
-                        server_docker.as_deref(),
-                    )
+                    reg.is_client_on_replica(&client, server_ethernet, server_docker.as_deref())
                 };
                 if already_setup {
                     reg.add_chain(&client);

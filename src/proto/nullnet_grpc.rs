@@ -74,7 +74,9 @@ pub struct VxlanSetup {
 pub struct VxlanTeardown {
     #[prost(uint32, tag = "1")]
     pub vxlan_id: u32,
-    #[prost(string, optional, tag = "2")]
+    #[prost(string, tag = "2")]
+    pub side: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "3")]
     pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

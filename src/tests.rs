@@ -1297,7 +1297,11 @@ async fn multi_replica_comprehensive_register() {
         .iter()
         .find(|r| r.ip() == ip(4, 4, 4, 4))
         .expect("4.4.4.4 should exist");
-    assert_eq!(on_444.clients().len(), 1, "4.4.4.4 should have 1 client (C)");
+    assert_eq!(
+        on_444.clients().len(),
+        1,
+        "4.4.4.4 should have 1 client (C)"
+    );
     let b2 = reg_b
         .replicas()
         .iter()
@@ -1310,7 +1314,11 @@ async fn multi_replica_comprehensive_register() {
         panic!("C should be registered");
     };
     assert_eq!(reg_c.replicas().len(), 1);
-    assert_eq!(reg_c.client_count(), 2, "C should have 2 proxy clients (overloaded)");
+    assert_eq!(
+        reg_c.client_count(),
+        2,
+        "C should have 2 proxy clients (overloaded)"
+    );
 
     // D: 1 replica, 1 proxy client (minimal)
     let ServiceInfo::Registered(reg_d) = &guard["D"] else {
@@ -1344,10 +1352,7 @@ async fn multi_replica_b_same_ip_container_disconnect() {
 
     // Container "b1" dies — host 2.2.2.2 re-registers with only "b2"
     server
-        .apply_services_list(
-            ip(2, 2, 2, 2),
-            &[("B".into(), 8080, Some("b2".into()))],
-        )
+        .apply_services_list(ip(2, 2, 2, 2), &[("B".into(), 8080, Some("b2".into()))])
         .await
         .expect("apply_services_list failed");
 
@@ -1361,7 +1366,10 @@ async fn multi_replica_b_same_ip_container_disconnect() {
     };
     assert_eq!(reg_b.replicas().len(), 2, "B should have 2 replicas left");
     assert!(reg_b.has_replica_on_ip(ip(2, 2, 2, 2)), "b2 should survive");
-    assert!(reg_b.has_replica_on_ip(ip(4, 4, 4, 4)), "standalone should survive");
+    assert!(
+        reg_b.has_replica_on_ip(ip(4, 4, 4, 4)),
+        "standalone should survive"
+    );
     let on_2: Vec<_> = reg_b
         .replicas()
         .iter()
@@ -1386,12 +1394,19 @@ async fn multi_replica_b_same_ip_container_disconnect() {
 
     // C: both proxies survive (C→B on 4.4.4.4 unaffected by b1 removal)
     if let ServiceInfo::Registered(reg_c) = &guard["C"] {
-        assert_eq!(reg_c.client_count(), 2, "C should still have 2 proxy clients");
+        assert_eq!(
+            reg_c.client_count(),
+            2,
+            "C should still have 2 proxy clients"
+        );
     }
 
     // D: proxy torn down (D→B was on b1)
     if let ServiceInfo::Registered(reg_d) = &guard["D"] {
-        assert!(!reg_d.has_clients(), "D should have no clients after b1 removal");
+        assert!(
+            !reg_d.has_clients(),
+            "D should have no clients after b1 removal"
+        );
     }
 
     // Freed: A(a1)→B, D→B, proxy1→A, proxy1→D = 4
@@ -1441,17 +1456,28 @@ async fn multi_replica_b_different_ip_disconnect() {
 
     // A: both proxies survive (A→B edges on b1 and b2 unaffected)
     if let ServiceInfo::Registered(reg_a) = &guard["A"] {
-        assert_eq!(reg_a.client_count(), 2, "A should still have 2 proxy clients");
+        assert_eq!(
+            reg_a.client_count(),
+            2,
+            "A should still have 2 proxy clients"
+        );
     }
 
     // C: all proxy chains torn down (C→B was on 4.4.4.4)
     if let ServiceInfo::Registered(reg_c) = &guard["C"] {
-        assert!(!reg_c.has_clients(), "C should have no clients after 4.4.4.4 removal");
+        assert!(
+            !reg_c.has_clients(),
+            "C should have no clients after 4.4.4.4 removal"
+        );
     }
 
     // D: proxy survives (D→B on b1 at 2.2.2.2)
     if let ServiceInfo::Registered(reg_d) = &guard["D"] {
-        assert_eq!(reg_d.client_count(), 1, "D should still have its proxy client");
+        assert_eq!(
+            reg_d.client_count(),
+            1,
+            "D should still have its proxy client"
+        );
     }
 
     // Freed: C→B, proxy1→C, proxy2→C = 3
@@ -1478,10 +1504,7 @@ async fn multi_replica_first_step_container_disconnect() {
 
     // Container "a1" dies — host 1.1.1.1 re-registers with only "a2"
     server
-        .apply_services_list(
-            ip(1, 1, 1, 1),
-            &[("A".into(), 8080, Some("a2".into()))],
-        )
+        .apply_services_list(ip(1, 1, 1, 1), &[("A".into(), 8080, Some("a2".into()))])
         .await
         .expect("apply_services_list failed");
 
@@ -1492,7 +1515,11 @@ async fn multi_replica_first_step_container_disconnect() {
     let ServiceInfo::Registered(reg_a) = &guard["A"] else {
         panic!("A should still be registered");
     };
-    assert_eq!(reg_a.replicas().len(), 1, "A should have 1 replica left (a2)");
+    assert_eq!(
+        reg_a.replicas().len(),
+        1,
+        "A should have 1 replica left (a2)"
+    );
     let surviving = &reg_a.replicas()[0];
     assert_eq!(surviving.docker_container(), Some("a2"));
     assert_eq!(reg_a.client_count(), 1, "only proxy on a2 should survive");
@@ -1503,16 +1530,28 @@ async fn multi_replica_first_step_container_disconnect() {
         panic!("B should still be registered");
     };
     assert_eq!(reg_b.replicas().len(), 3);
-    assert_eq!(reg_b.client_count(), 3, "A(a1)→B should be torn down, 3 clients remain");
+    assert_eq!(
+        reg_b.client_count(),
+        3,
+        "A(a1)→B should be torn down, 3 clients remain"
+    );
 
     // C: unaffected
     if let ServiceInfo::Registered(reg_c) = &guard["C"] {
-        assert_eq!(reg_c.client_count(), 2, "C should still have 2 proxy clients");
+        assert_eq!(
+            reg_c.client_count(),
+            2,
+            "C should still have 2 proxy clients"
+        );
     }
 
     // D: unaffected
     if let ServiceInfo::Registered(reg_d) = &guard["D"] {
-        assert_eq!(reg_d.client_count(), 1, "D should still have its proxy client");
+        assert_eq!(
+            reg_d.client_count(),
+            1,
+            "D should still have its proxy client"
+        );
     }
 
     // Freed: proxy1→A + A(a1)→B = 2; remaining = 7

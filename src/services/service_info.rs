@@ -231,11 +231,7 @@ impl RegisteredServiceInfo {
 
     /// Decrement `active_chains` for a specific client entry.
     /// If it reaches 0, the VXLAN is torn down and the entry is removed.
-    pub(crate) async fn decrement_chain(
-        &mut self,
-        client: &Client,
-        orchestrator: &Orchestrator,
-    ) {
+    pub(crate) async fn decrement_chain(&mut self, client: &Client, orchestrator: &Orchestrator) {
         for replica in &mut self.replicas {
             if let Some(ci) = replica.clients.clients_mut().get_mut(client) {
                 ci.remove_active_chains(1);

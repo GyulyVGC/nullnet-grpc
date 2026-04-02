@@ -40,12 +40,7 @@ enum ProxyFilter<'a> {
 }
 
 impl ProxyFilter<'_> {
-    fn matches(
-        &self,
-        client: &Client,
-        replica_ip: IpAddr,
-        replica_docker: Option<&str>,
-    ) -> bool {
+    fn matches(&self, client: &Client, replica_ip: IpAddr, replica_docker: Option<&str>) -> bool {
         if client.is_proxy().is_none() {
             return false;
         }
@@ -53,9 +48,7 @@ impl ProxyFilter<'_> {
             ProxyFilter::All => true,
             ProxyFilter::ByIp(ip) => client.is_proxy() == Some(*ip),
             ProxyFilter::ByClient(c) => client == *c,
-            ProxyFilter::OnReplica(ip, docker) => {
-                replica_ip == *ip && replica_docker == *docker
-            }
+            ProxyFilter::OnReplica(ip, docker) => replica_ip == *ip && replica_docker == *docker,
             ProxyFilter::OnIp(ip) => replica_ip == *ip,
         }
     }
@@ -254,8 +247,14 @@ async fn teardown_chain(
 
     // For each proxy chain, walk and tear down its dependency edges
     for (_, _, _, _, replica_ip, replica_docker) in &proxy_teardowns {
-        teardown_dep_chain(name, *replica_ip, replica_docker.as_deref(), services, orchestrator)
-            .await;
+        teardown_dep_chain(
+            name,
+            *replica_ip,
+            replica_docker.as_deref(),
+            services,
+            orchestrator,
+        )
+        .await;
     }
 
     // Tear down proxy→service edges
@@ -302,11 +301,7 @@ async fn teardown_dep_chain(
             break;
         }
 
-        let client = Client::new_service(
-            current_name.clone(),
-            current_ip,
-            current_docker.clone(),
-        );
+        let client = Client::new_service(current_name.clone(), current_ip, current_docker.clone());
 
         let mut next = None;
         for dep_name in &deps {
@@ -412,13 +407,8 @@ pub(crate) async fn apply_changes(
                     // Last replica gone — config-based cascade to transitive dependents
                     teardown_invalidated_service(&name, true, services, orchestrator).await;
                 } else {
-                    teardown_partial_replicas(
-                        &name,
-                        ProxyFilter::OnIp(ip),
-                        services,
-                        orchestrator,
-                    )
-                    .await;
+                    teardown_partial_replicas(&name, ProxyFilter::OnIp(ip), services, orchestrator)
+                        .await;
                     if let Some(si) = services.get_mut(&name) {
                         si.remove_replicas_on_ip(ip);
                     }
