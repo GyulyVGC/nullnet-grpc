@@ -43,8 +43,8 @@ impl Net {
             },
             Net::Vxlan => NetMessage {
                 message: Some(net_message::Message::VxlanTeardown(VxlanTeardown {
-                    vxlan_id: net_id,
-                    side: side.to_string(),
+                    ns_name: format!("ns_{net_id}_{side}"),
+                    br_name: format!("br_{net_id}_{side}"),
                     docker_container,
                 })),
             },
