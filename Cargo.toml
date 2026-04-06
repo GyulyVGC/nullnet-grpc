@@ -5,20 +5,20 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
-tonic = { version = "0.14.4", features = ["_tls-any", "tls-native-roots"] }
+tonic = { version = "0.14.5", features = ["_tls-any", "tls-native-roots"] }
 prost = "0.14.3"
-tonic-prost = "0.14.4"
+tonic-prost = "0.14.5"
 nullnet-liberror = { git = "https://github.com/NullNet-ai/libguard.git", branch = "nullnet-liberror-print" }
-tokio = { version = "1.49.0", features = ["rt-multi-thread", "fs"] }
+tokio = { version = "1.51.0", features = ["rt-multi-thread", "fs"] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
 serde = { version = "1.0.228", features = ["derive"] }
-toml = "1.0.2"
-uuid = { version = "1.20.0", features = ["v4"] }
+toml = "1.1.2"
+uuid = { version = "1.23.0", features = ["v4"] }
 ipnetwork = "0.21.1"
 notify = "8.2.0"
 
 [build-dependencies]
-tonic-prost-build = "0.14.4"
+tonic-prost-build = "0.14.5"
 
 #[dev-dependencies]
 #serde_test = "1.0.177"
