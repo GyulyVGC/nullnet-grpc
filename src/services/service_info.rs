@@ -20,26 +20,55 @@ impl ServiceInfo {
         ))
     }
 
-    pub(crate) fn register(&mut self, ip: IpAddr, port: u16) {
-        let is_proxy_reachable = self.is_proxy_reachable();
-        let dependencies = self.dependencies();
-        let clients = self.clients();
-
-        *self = ServiceInfo::Registered(RegisteredServiceInfo {
-            dependencies,
-            is_proxy_reachable,
-            ip,
-            port,
-            clients,
-        });
+    pub(crate) fn add_replica(&mut self, ip: IpAddr, port: u16, docker_container: Option<String>) {
+        match self {
+            ServiceInfo::Unregistered(unreg) => {
+                *self = ServiceInfo::Registered(RegisteredServiceInfo {
+                    dependencies: unreg.dependencies.clone(),
+                    is_proxy_reachable: unreg.is_proxy_reachable,
+                    replicas: vec![Replica::new(ip, port, docker_container)],
+                });
+            }
+            ServiceInfo::Registered(reg) => {
+                if let Some(replica) = reg
+                    .replicas
+                    .iter_mut()
+                    .find(|r| r.matches_identity(ip, docker_container.as_deref()))
+                {
+                    replica.port = port;
+                } else {
+                    reg.replicas.push(Replica::new(ip, port, docker_container));
+                }
+            }
+        }
     }
 
-    pub(crate) fn unregister(&mut self) {
+    /// Remove all replicas on the given IP.
+    /// Transitions to `Unregistered` if no replicas remain.
+    pub(crate) fn remove_replicas_on_ip(&mut self, ip: IpAddr) {
         if let ServiceInfo::Registered(reg) = self {
-            *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-                reg.dependencies.clone(),
-                reg.is_proxy_reachable,
-            ));
+            reg.replicas.retain(|r| r.ip != ip);
+            if reg.replicas.is_empty() {
+                *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
+                    reg.dependencies.clone(),
+                    reg.is_proxy_reachable,
+                ));
+            }
+        }
+    }
+
+    /// Remove a single replica identified by `(ip, docker_container)`.
+    /// Transitions to `Unregistered` if no replicas remain.
+    pub(crate) fn remove_replica(&mut self, ip: IpAddr, docker_container: Option<&str>) {
+        if let ServiceInfo::Registered(reg) = self {
+            reg.replicas
+                .retain(|r| !r.matches_identity(ip, docker_container));
+            if reg.replicas.is_empty() {
+                *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
+                    reg.dependencies.clone(),
+                    reg.is_proxy_reachable,
+                ));
+            }
         }
     }
 
@@ -71,13 +100,6 @@ impl ServiceInfo {
             ServiceInfo::Registered(reg) => reg.dependencies.clone(),
         }
     }
-
-    fn clients(&self) -> Clients {
-        match self {
-            ServiceInfo::Unregistered(_) => Clients::default(),
-            ServiceInfo::Registered(reg) => reg.clients.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -98,108 +120,206 @@ impl UnregisteredServiceInfo {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct RegisteredServiceInfo {
-    /// Dependencies of the service.
-    dependencies: Vec<String>,
-    /// Whether the proxy is reachable for this service, with the associated timeout.
-    is_proxy_reachable: Option<u64>,
-    /// IP address of the host.
+pub(crate) struct Replica {
     ip: IpAddr,
-    /// Port of the service.
     port: u16,
-    /// Clients connected to this node.
+    docker_container: Option<String>,
     clients: Clients,
 }
 
-impl RegisteredServiceInfo {
-    pub(crate) fn dependency_chain(
-        &self,
-        service_name: String,
-        services: &HashMap<String, ServiceInfo>,
-    ) -> Vec<Edge> {
-        let mut chain = Vec::new();
-        let mut current_ip: Option<IpAddr> = Some(self.ip);
-        let mut current_name = service_name;
-        for dep in &self.dependencies {
-            let dep_ip = match services.get(dep) {
-                Some(ServiceInfo::Registered(reg)) => Some(reg.ip),
-                _ => None,
-            };
-            let edge = Edge::new(
-                current_ip,
-                Client::new(current_name.clone(), None),
-                dep_ip,
-                Client::new(dep.clone(), None),
-            );
-            chain.push(edge);
-            current_ip = dep_ip;
-            current_name.clone_from(dep);
-        }
-        chain
-    }
-
-    pub(crate) fn add_chain(&mut self, client: &Client) {
-        if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
-            client_info.add_active_chain();
+impl Replica {
+    fn new(ip: IpAddr, port: u16, docker_container: Option<String>) -> Self {
+        Self {
+            ip,
+            port,
+            docker_container,
+            clients: Clients::default(),
         }
     }
 
-    pub(crate) fn set_latest_now(&mut self, client: &Client) {
-        if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
-            client_info.set_latest_now();
-        }
+    pub(crate) fn ip(&self) -> IpAddr {
+        self.ip
     }
 
-    pub(crate) async fn remove_chains(
-        &mut self,
-        client_ip: IpAddr,
-        client: &Client,
-        num_chains: usize,
-        orchestrator: &Orchestrator,
-    ) {
-        let net_to_remove = if let Some(client_info) = self.clients.clients_mut().get_mut(client) {
-            client_info.remove_active_chains(num_chains);
-            if client_info.active_chains() == 0 {
-                Some(client_info.net_id())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if let Some(net_id) = net_to_remove {
-            self.clients_mut().remove(client);
-
-            for dest in [self.ip, client_ip] {
-                orchestrator.send_net_teardown(dest, net_id).await;
-            }
-        }
+    pub(crate) fn port(&self) -> u16 {
+        self.port
     }
 
-    pub(crate) fn ip_port(&self) -> (IpAddr, u16) {
-        (self.ip, self.port)
-    }
-
-    pub(crate) fn add_client(&mut self, client: Client, client_info: ClientInfo) {
-        self.clients.add_client(client, client_info);
-    }
-
-    pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
-        self.clients
-            .is_client_setup(client)
-            .map(|server_net| Upstream {
-                ip: server_net.to_string(),
-                port: u32::from(self.port),
-            })
+    pub(crate) fn docker_container(&self) -> Option<&str> {
+        self.docker_container.as_deref()
     }
 
     pub(crate) fn clients(&self) -> &HashMap<Client, ClientInfo> {
         self.clients.clients()
     }
 
-    pub(crate) fn clients_mut(&mut self) -> &mut HashMap<Client, ClientInfo> {
-        self.clients.clients_mut()
+    /// A replica is uniquely identified by its `(ip, docker_container)` pair.
+    pub(crate) fn matches_identity(&self, ip: IpAddr, docker_container: Option<&str>) -> bool {
+        self.ip == ip && self.docker_container.as_deref() == docker_container
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RegisteredServiceInfo {
+    /// Dependencies of the service.
+    dependencies: Vec<String>,
+    /// Whether the proxy is reachable for this service, with the associated timeout.
+    is_proxy_reachable: Option<u64>,
+    /// Replicas of this service.
+    replicas: Vec<Replica>,
+}
+
+impl RegisteredServiceInfo {
+    pub(crate) fn dependency_chain(
+        &self,
+        service_name: String,
+        service_ip: IpAddr,
+        service_docker: Option<&str>,
+        services: &HashMap<String, ServiceInfo>,
+    ) -> Vec<Edge> {
+        let mut chain = Vec::new();
+        let mut current_ip: Option<IpAddr> = Some(service_ip);
+        let mut current_docker: Option<String> = service_docker.map(String::from);
+        let mut current_name = service_name;
+        for dep in &self.dependencies {
+            let (dep_ip, dep_docker) = match services.get(dep) {
+                Some(ServiceInfo::Registered(reg)) => {
+                    let r = reg.pick_replica_least_clients();
+                    (Some(r.ip), r.docker_container.clone())
+                }
+                _ => (None, None),
+            };
+            let client = match current_ip {
+                Some(ip) => Client::new_service(current_name.clone(), ip, current_docker.clone()),
+                None => Client::new(current_name.clone(), None),
+            };
+            let edge = Edge::new(
+                current_ip,
+                client,
+                current_docker,
+                dep_ip,
+                Client::new(dep.clone(), None),
+                dep_docker.clone(),
+            );
+            chain.push(edge);
+            current_ip = dep_ip;
+            current_docker = dep_docker;
+            current_name.clone_from(dep);
+        }
+        chain
+    }
+
+    /// Invariant: a given `Client` exists on exactly one replica (sticky sessions).
+    /// These methods search across replicas and update the first (only) match.
+    pub(crate) fn add_chain(&mut self, client: &Client) {
+        for replica in &mut self.replicas {
+            if let Some(client_info) = replica.clients.clients_mut().get_mut(client) {
+                client_info.add_active_chain();
+                return;
+            }
+        }
+    }
+
+    pub(crate) fn set_latest_now(&mut self, client: &Client) {
+        for replica in &mut self.replicas {
+            if let Some(client_info) = replica.clients.clients_mut().get_mut(client) {
+                client_info.set_latest_now();
+                return;
+            }
+        }
+    }
+
+    /// Decrement `active_chains` for a specific client entry.
+    /// If it reaches 0, the VXLAN is torn down and the entry is removed.
+    pub(crate) async fn decrement_chain(&mut self, client: &Client, orchestrator: &Orchestrator) {
+        for replica in &mut self.replicas {
+            if let Some(ci) = replica.clients.clients_mut().get_mut(client) {
+                ci.remove_active_chains(1);
+                if ci.active_chains() == 0 {
+                    let ci = replica.clients.clients_mut().remove(client).unwrap();
+                    orchestrator
+                        .send_net_teardown(
+                            ci.client_ip(),
+                            ci.docker_container().cloned(),
+                            replica.ip,
+                            replica.docker_container.clone(),
+                            ci.net_id(),
+                        )
+                        .await;
+                }
+                return;
+            }
+        }
+    }
+
+    /// Find which server replica hosts a given client entry.
+    /// Returns the server replica's `(ip, docker_container)`.
+    pub(crate) fn client_replica(&self, client: &Client) -> Option<(IpAddr, Option<String>)> {
+        self.replicas
+            .iter()
+            .find(|r| r.clients.clients().contains_key(client))
+            .map(|r| (r.ip, r.docker_container.clone()))
+    }
+
+    /// Select the replica with the fewest active clients.
+    pub(crate) fn pick_replica_least_clients(&self) -> &Replica {
+        self.replicas
+            .iter()
+            .min_by_key(|r| r.clients.clients().len())
+            .expect("registered service has no replicas")
+    }
+
+    pub(crate) fn add_client_to_replica(
+        &mut self,
+        replica_ip: IpAddr,
+        replica_docker: Option<&str>,
+        client: Client,
+        client_info: ClientInfo,
+    ) {
+        if let Some(replica) = self
+            .replicas
+            .iter_mut()
+            .find(|r| r.matches_identity(replica_ip, replica_docker))
+        {
+            replica.clients.add_client(client, client_info);
+        }
+    }
+
+    pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
+        for replica in &self.replicas {
+            if let Some(server_net) = replica.clients.is_client_setup(client) {
+                return Some(Upstream {
+                    ip: server_net.to_string(),
+                    port: u32::from(replica.port),
+                });
+            }
+        }
+        None
+    }
+
+    /// Check if a specific replica already has this client.
+    pub(crate) fn is_client_on_replica(
+        &self,
+        client: &Client,
+        ip: IpAddr,
+        docker: Option<&str>,
+    ) -> bool {
+        self.replicas
+            .iter()
+            .filter(|r| r.matches_identity(ip, docker))
+            .any(|r| r.clients.is_client_setup(client).is_some())
+    }
+
+    pub(crate) fn remove_client(&mut self, client: &Client) {
+        for replica in &mut self.replicas {
+            if replica.clients.clients_mut().remove(client).is_some() {
+                return;
+            }
+        }
+    }
+
+    pub(crate) fn replicas(&self) -> &[Replica] {
+        &self.replicas
     }
 
     pub(crate) fn dependencies(&self) -> &Vec<String> {
@@ -208,21 +328,95 @@ impl RegisteredServiceInfo {
 
     pub(crate) fn expired_proxy_clients(&self, timeout: Duration) -> Vec<Client> {
         let now = Instant::now();
-        self.clients
-            .clients()
+        self.replicas
             .iter()
-            .filter(|(c, ci)| c.is_proxy().is_some() && now.duration_since(ci.latest()) >= timeout)
-            .map(|(c, _)| c.clone())
+            .flat_map(|replica| {
+                replica
+                    .clients
+                    .clients()
+                    .iter()
+                    .filter(|(c, ci)| {
+                        c.is_proxy().is_some() && now.duration_since(ci.latest()) >= timeout
+                    })
+                    .map(|(c, _)| c.clone())
+            })
             .collect()
     }
 
     pub(crate) fn nearest_proxy_expiry(&self, timeout: Duration) -> Option<Duration> {
         let now = Instant::now();
-        self.clients
-            .clients()
+        self.replicas
             .iter()
-            .filter(|(c, _)| c.is_proxy().is_some())
-            .map(|(_, ci)| timeout.saturating_sub(now.duration_since(ci.latest())))
+            .flat_map(|replica| {
+                replica
+                    .clients
+                    .clients()
+                    .iter()
+                    .filter(|(c, _)| c.is_proxy().is_some())
+                    .map(|(_, ci)| timeout.saturating_sub(now.duration_since(ci.latest())))
+            })
             .min()
+    }
+
+    /// Return service-to-service client entries connected to replicas at the given IP.
+    pub(crate) fn service_clients_on_ip(&self, ip: IpAddr) -> Vec<Client> {
+        self.replicas
+            .iter()
+            .filter(|r| r.ip == ip)
+            .flat_map(|r| r.clients.clients().keys())
+            .filter(|c| c.is_proxy().is_none())
+            .cloned()
+            .collect()
+    }
+
+    /// Return service-to-service client entries connected to a specific replica.
+    pub(crate) fn service_clients_on_replica(
+        &self,
+        ip: IpAddr,
+        docker_container: Option<&str>,
+    ) -> Vec<Client> {
+        self.replicas
+            .iter()
+            .filter(|r| r.matches_identity(ip, docker_container))
+            .flat_map(|r| r.clients.clients().keys())
+            .filter(|c| c.is_proxy().is_none())
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn has_replica_on_ip(&self, ip: IpAddr) -> bool {
+        self.replicas.iter().any(|r| r.ip == ip)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn client_count(&self) -> usize {
+        self.replicas
+            .iter()
+            .map(|r| r.clients.clients().len())
+            .sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_clients(&self) -> bool {
+        self.replicas
+            .iter()
+            .any(|r| !r.clients.clients().is_empty())
+    }
+
+    /// Collect all clients across all replicas as owned data (for teardown iteration).
+    pub(crate) fn all_clients_owned(&self) -> Vec<(Client, ClientInfo, IpAddr, Option<String>)> {
+        self.replicas
+            .iter()
+            .flat_map(|replica| {
+                replica.clients.clients().iter().map(move |(c, ci)| {
+                    (
+                        c.clone(),
+                        ci.clone(),
+                        replica.ip,
+                        replica.docker_container.clone(),
+                    )
+                })
+            })
+            .collect()
     }
 }

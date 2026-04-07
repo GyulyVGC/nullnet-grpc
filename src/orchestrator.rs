@@ -1,4 +1,5 @@
-use crate::constants::NET_TYPE;
+use crate::env::NET_TYPE;
+use crate::net_id_pool::NetIdPool;
 use crate::proto::nullnet_grpc::{MsgId, NetMessage};
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::service_info::ServiceInfo;
@@ -17,6 +18,7 @@ type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
 pub struct Orchestrator {
     clients: Arc<RwLock<HashMap<IpAddr, OutboundStream>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    net_id_pool: Arc<Mutex<NetIdPool>>,
 }
 
 impl Orchestrator {
@@ -24,6 +26,7 @@ impl Orchestrator {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            net_id_pool: Arc::new(Mutex::new(NetIdPool::new())),
         }
     }
 
@@ -81,6 +84,7 @@ impl Orchestrator {
         remote_server_name: Option<String>,
         net_id: u32,
         remote: IpAddr,
+        docker_containers: (Option<String>, Option<String>),
     ) -> Option<Ipv4Addr> {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
@@ -88,8 +92,14 @@ impl Orchestrator {
             let msg_id = Uuid::new_v4().to_string();
             self.pending.lock().await.insert(msg_id.clone(), tx);
 
-            let (server_net, message) =
-                NET_TYPE.setup(msg_id.clone(), dest, remote_server_name, net_id, remote)?;
+            let (server_net, message) = NET_TYPE.setup(
+                msg_id.clone(),
+                dest,
+                remote_server_name,
+                net_id,
+                remote,
+                docker_containers,
+            )?;
 
             if outbound.send(Ok(message)).await.is_err() {
                 self.pending.lock().await.remove(&msg_id);
@@ -107,20 +117,38 @@ impl Orchestrator {
         }
     }
 
-    pub(crate) async fn send_net_teardown(&self, dest: IpAddr, net_id: u32) {
-        let outbound = self.clients.read().await.get(&dest).cloned();
-        if let Some(outbound) = outbound {
-            println!("Sending network {net_id} teardown to client {dest}");
+    pub(crate) async fn allocate_net_id(&self) -> Option<u32> {
+        self.net_id_pool.lock().await.allocate()
+    }
 
-            let message = NET_TYPE.teardown(net_id);
+    pub(crate) async fn send_net_teardown(
+        &self,
+        client: IpAddr,
+        client_docker: Option<String>,
+        server: IpAddr,
+        server_docker: Option<String>,
+        net_id: u32,
+    ) {
+        for (dest, side, docker) in [(client, "c", client_docker), (server, "s", server_docker)] {
+            let outbound = self.clients.read().await.get(&dest).cloned();
+            if let Some(outbound) = outbound {
+                println!("Sending network {net_id} teardown to client {dest}");
 
-            let _ = outbound.send(Ok(message)).await.handle_err(location!());
+                let message = NET_TYPE.teardown(net_id, side, docker);
+
+                let _ = outbound.send(Ok(message)).await.handle_err(location!());
+            }
         }
+        self.net_id_pool.lock().await.free(net_id);
     }
 }
 
 #[cfg(test)]
 impl Orchestrator {
+    pub(crate) async fn net_ids_in_use(&self) -> u32 {
+        self.net_id_pool.lock().await.in_use()
+    }
+
     pub(crate) async fn register_fake_client(&self, ip: IpAddr) {
         use crate::proto::nullnet_grpc::net_message;
 

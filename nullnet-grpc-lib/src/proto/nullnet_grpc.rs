@@ -67,11 +67,19 @@ pub struct VxlanSetup {
     pub remote_ip: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "9")]
     pub host_mapping: ::core::option::Option<HostMapping>,
+    #[prost(string, optional, tag = "10")]
+    pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanTeardown {
     #[prost(uint32, tag = "1")]
     pub vxlan_id: u32,
+    #[prost(string, tag = "2")]
+    pub ns_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub br_name: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "4")]
+    pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgId {
@@ -91,6 +99,8 @@ pub struct Service {
     pub name: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
     pub port: u32,
+    #[prost(string, optional, tag = "3")]
+    pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HostMapping {

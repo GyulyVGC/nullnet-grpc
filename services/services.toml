@@ -2,6 +2,7 @@
 name = "color.com"
 timeout = 0
 dependencies = ["fs.color.com"]
+max-networks = 10
 
 #[[services]]
 #name = "dumb.color.com"

@@ -30,11 +30,32 @@ impl Clients {
 pub(crate) struct Client {
     name: String,
     proxy: Option<IpAddr>,
+    /// Source replica identity for service-to-service edges.
+    /// A VXLAN connects two specific replicas, so A(a1)→B(b1) and A(a2)→B(b1)
+    /// are distinct connections that need separate entries.
+    replica: Option<(IpAddr, Option<String>)>,
 }
 
 impl Client {
     pub(crate) fn new(name: String, proxy: Option<IpAddr>) -> Self {
-        Self { name, proxy }
+        Self {
+            name,
+            proxy,
+            replica: None,
+        }
+    }
+
+    /// Create a service-to-service client identified by its source replica.
+    pub(crate) fn new_service(
+        name: String,
+        replica_ip: IpAddr,
+        replica_docker: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            proxy: None,
+            replica: Some((replica_ip, replica_docker)),
+        }
     }
 
     pub(crate) fn name(&self) -> &str {
@@ -52,44 +73,68 @@ impl Client {
     pub(crate) fn is_proxy(&self) -> Option<IpAddr> {
         self.proxy
     }
+
+    /// The source replica identity for service-to-service clients.
+    pub(crate) fn replica_identity(&self) -> Option<(IpAddr, Option<&str>)> {
+        self.replica
+            .as_ref()
+            .map(|(ip, docker)| (*ip, docker.as_deref()))
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ClientInfo {
+    /// Real IP of the client node (used for teardown).
+    client_ip: IpAddr,
     client_net: Ipv4Addr,
     server_net: Ipv4Addr,
     net_id: u32,
     time_ms: u128,
     active_chains: usize,
     latest: Instant,
+    docker_container: Option<String>,
 }
 
 impl ClientInfo {
     pub(crate) fn new(
+        client_ip: IpAddr,
         client_net: Ipv4Addr,
         server_net: Ipv4Addr,
         net_id: u32,
         time_ms: u128,
+        docker_container: Option<String>,
     ) -> Self {
         Self {
+            client_ip,
             client_net,
             server_net,
             net_id,
             time_ms,
             active_chains: 0,
             latest: Instant::now(),
+            docker_container,
         }
     }
 
-    pub(crate) fn placeholder() -> Self {
+    pub(crate) fn placeholder(client_ip: IpAddr) -> Self {
         Self {
+            client_ip,
             client_net: Ipv4Addr::UNSPECIFIED,
             server_net: Ipv4Addr::UNSPECIFIED,
             net_id: 0,
             time_ms: 0,
             active_chains: 0,
             latest: Instant::now(),
+            docker_container: None,
         }
+    }
+
+    pub(crate) fn client_ip(&self) -> IpAddr {
+        self.client_ip
+    }
+
+    pub(crate) fn docker_container(&self) -> Option<&String> {
+        self.docker_container.as_ref()
     }
 
     pub(crate) fn client_net(&self) -> Ipv4Addr {
