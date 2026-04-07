@@ -7,7 +7,7 @@ digraph G {
 	"10.0.0.1 (via 5.5.5.5)" -> "A" [label="VXLAN 103 [0ms]"];
 	"10.0.0.2 (via 6.6.6.6)" -> "A" [label="VXLAN 106 [0ms]"];
 
-	"B" [label="B"] [style=solid, color=green];
+	"B" [label="B (0/1)"] [style=solid, color=green];
 
 	"C" [label="C (1/1)"] [style=dashed, color=green];
 	"A" -> "C" [label="VXLAN 101 [0ms]"];

@@ -294,7 +294,7 @@ async fn teardown_dep_chain(
     loop {
         let deps = services
             .get(&current_name)
-            .map(|si| si.dependencies())
+            .map(ServiceInfo::dependencies)
             .unwrap_or_default();
 
         if deps.is_empty() {

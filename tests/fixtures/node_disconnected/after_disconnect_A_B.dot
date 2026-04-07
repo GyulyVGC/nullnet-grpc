@@ -7,7 +7,7 @@ digraph G {
 
 	"B" [label="B"] [style=solid, color=red];
 
-	"C" [label="C"] [style=dashed, color=green];
+	"C" [label="C (0/1)"] [style=dashed, color=green];
 
-	"D" [label="D"] [style=dashed, color=green];
+	"D" [label="D (0/1)"] [style=dashed, color=green];
 }

@@ -258,6 +258,7 @@ impl NullnetGrpcImpl {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn net_chain_setup(
         &self,
         dep_chain: Vec<RegisteredEdge>,

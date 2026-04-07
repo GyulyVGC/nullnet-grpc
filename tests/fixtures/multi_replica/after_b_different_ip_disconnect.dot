@@ -12,7 +12,7 @@ digraph G {
 	"A" -> "B" [label="VXLAN 105 [0ms]"];
 	"D" -> "B" [label="VXLAN 107 [0ms]"];
 
-	"C" [label="C"] [style=solid, color=green];
+	"C" [label="C (0/1)"] [style=solid, color=green];
 
 	"D" [label="D (1/1)"] [style=solid, color=green];
 	"10.0.0.3 (via 5.5.5.5)" -> "D" [label="VXLAN 108 [0ms]"];
