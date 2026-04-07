@@ -99,25 +99,10 @@ async fn setup_proxy_chain(
     proxy_ip: IpAddr,
     client_ip: &str,
 ) {
-    let (service_ip, service_docker) = {
-        let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = guard.get(service_name).expect("service not found")
-        else {
-            panic!("service not registered");
-        };
-        let replica = reg.pick_replica_least_clients();
-        (replica.ip(), replica.docker_container().map(String::from))
-    };
     server
-        .setup_proxy_chain(
-            service_name,
-            proxy_ip,
-            client_ip,
-            service_ip,
-            service_docker.as_deref(),
-        )
+        .new_proxy_chain(service_name, proxy_ip, client_ip)
         .await
-        .expect("setup_proxy_chain failed");
+        .expect("new_proxy_chain failed");
 }
 
 // ===========================================================================

@@ -126,35 +126,8 @@ impl NullnetGrpcImpl {
             return Ok(Response::new(upstream));
         }
 
-        // Least-clients: pick the replica with fewest active clients
-        let (service_ip, service_port, service_docker) = {
-            let guard = self.services.read().await;
-            let reg = match guard.get(&service_name) {
-                Some(ServiceInfo::Registered(reg)) => reg,
-                _ => Err("Service is not registered").handle_err(location!())?,
-            };
-            let replica = reg.pick_replica_least_clients();
-            (
-                replica.ip(),
-                replica.port(),
-                replica.docker_container().map(String::from),
-            )
-        };
-
-        let upstream_ip = self
-            .setup_proxy_chain(
-                &service_name,
-                proxy_ip,
-                &client_ip.to_string(),
-                service_ip,
-                service_docker.as_deref(),
-            )
-            .await?;
-
-        Ok(Response::new(Upstream {
-            ip: upstream_ip.to_string(),
-            port: u32::from(service_port),
-        }))
+        self.new_proxy_chain(&service_name, proxy_ip, &client_ip.to_string())
+            .await
     }
 
     async fn services_list_impl(
@@ -189,6 +162,39 @@ impl NullnetGrpcImpl {
         self.apply_services_list(sender_ip, &service_list).await?;
 
         Ok(Response::new(Empty {}))
+    }
+
+    pub(crate) async fn new_proxy_chain(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+    ) -> Result<Response<Upstream>, Error> {
+        let guard = self.services.read().await;
+        let reg = match guard.get(service_name) {
+            Some(ServiceInfo::Registered(reg)) => reg,
+            _ => Err("Service is not registered").handle_err(location!())?,
+        };
+        let replica = reg.pick_replica_least_clients();
+        let service_ip = replica.ip();
+        let service_port = replica.port();
+        let service_docker = replica.docker_container().map(String::from);
+        drop(guard);
+
+        let upstream_ip = self
+            .setup_proxy_chain(
+                service_name,
+                proxy_ip,
+                client_ip,
+                service_ip,
+                service_docker.as_deref(),
+            )
+            .await?;
+
+        Ok(Response::new(Upstream {
+            ip: upstream_ip.to_string(),
+            port: u32::from(service_port),
+        }))
     }
 
     pub(crate) async fn setup_proxy_chain(
