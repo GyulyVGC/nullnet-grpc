@@ -67,9 +67,7 @@ impl ServiceInfo {
                 .iter()
                 .filter(|r| !r.clients().is_empty())
                 .count();
-            if total > 1 || active > 0 {
-                return format!("{name} ({active}/{total})");
-            }
+            return format!("{name} ({active}/{total})");
         }
         name.to_string()
     }
