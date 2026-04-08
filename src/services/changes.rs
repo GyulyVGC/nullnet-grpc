@@ -1,7 +1,7 @@
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::Client;
 use crate::services::service_info::ServiceInfo;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -260,19 +260,19 @@ async fn teardown_chain(
 
     // Remove client entries first, then tear down proxy→service networks
     // only if no other client still shares the same net_id.
-    let teardown_clients: Vec<Client> = proxy_teardowns
-        .iter()
-        .map(|(c, _, _, _, _, _)| c.clone())
-        .collect();
     if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
-        for client in &teardown_clients {
+        for (client, _, _, _, _, _) in &proxy_teardowns {
             reg.remove_client(client);
         }
     }
 
+    let mut torn_down_net_ids = HashSet::new();
     for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
+        if !torn_down_net_ids.insert(*net_id) {
+            continue; // already handled this net_id
+        }
         let shared = if let Some(ServiceInfo::Registered(reg)) = services.get(name) {
-            reg.has_other_clients_with_net_id(*net_id, &teardown_clients)
+            reg.has_clients_with_net_id(*net_id)
         } else {
             false
         };

@@ -340,14 +340,11 @@ impl RegisteredServiceInfo {
         ))
     }
 
-    /// Check if any client other than those in `excluding` uses the given `net_id`.
-    pub(crate) fn has_other_clients_with_net_id(&self, net_id: u32, excluding: &[Client]) -> bool {
-        self.replicas.iter().any(|r| {
-            r.clients
-                .clients()
-                .iter()
-                .any(|(c, ci)| ci.net_id() == net_id && !excluding.contains(c))
-        })
+    /// Check if any client uses the given `net_id`.
+    pub(crate) fn has_clients_with_net_id(&self, net_id: u32) -> bool {
+        self.replicas
+            .iter()
+            .any(|r| r.clients.clients().values().any(|ci| ci.net_id() == net_id))
     }
 
     pub(crate) fn max_networks(&self) -> Option<u32> {
