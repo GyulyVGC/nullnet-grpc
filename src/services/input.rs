@@ -101,14 +101,18 @@ impl ServicesToml {
                     .skip(1)
                     .cloned()
                     .collect();
-                ret_val.insert(d.clone(), ServiceInfo::new(d_deps, None));
+                ret_val.insert(d.clone(), ServiceInfo::new(d_deps, None, None));
             }
         }
 
         for s in self.services {
             ret_val.insert(
                 s.name,
-                ServiceInfo::new(s.dependencies, Some(s.timeout.unwrap_or(*TIMEOUT))),
+                ServiceInfo::new(
+                    s.dependencies,
+                    Some(s.timeout.unwrap_or(*TIMEOUT)),
+                    s.max_networks,
+                ),
             );
         }
 
@@ -133,4 +137,8 @@ struct ServiceToml {
     /// A value of 0 disables the timeout (proxy clients never expire).
     timeout: Option<u64>,
     dependencies: Vec<String>,
+    /// Maximum number of networks that can be created for this service.
+    /// When the limit is reached, new proxy clients reuse an existing network
+    /// on the same proxy node instead of creating a new one.
+    max_networks: Option<u32>,
 }

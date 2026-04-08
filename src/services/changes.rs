@@ -1,7 +1,7 @@
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::Client;
 use crate::services::service_info::ServiceInfo;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -206,9 +206,10 @@ async fn teardown_invalidated_service(
     if is_failed && let Some(si @ ServiceInfo::Registered(_)) = services.get(invalidated_service) {
         let deps = si.dependencies();
         let proxy = si.is_proxy_reachable();
+        let max_nets = si.max_networks();
         services.insert(
             invalidated_service.to_string(),
-            ServiceInfo::new(deps, proxy),
+            ServiceInfo::new(deps, proxy, max_nets),
         );
     }
 }
@@ -257,36 +258,48 @@ async fn teardown_chain(
         .await;
     }
 
-    // Tear down proxy→service edges
-    for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
-        orchestrator
-            .send_net_teardown(
-                *client_ip,
-                client_docker.clone(),
-                *service_ip,
-                service_docker.clone(),
-                *net_id,
-            )
-            .await;
+    // Remove client entries first, then tear down proxy→service networks
+    // only if no other client still shares the same net_id.
+    if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
+        for (client, _, _, _, _, _) in &proxy_teardowns {
+            reg.remove_client(client);
+        }
     }
 
-    if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
-        for (client, _, _, _, _, _) in proxy_teardowns {
-            reg.remove_client(&client);
+    let mut torn_down_net_ids = HashSet::new();
+    for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
+        if !torn_down_net_ids.insert(*net_id) {
+            continue; // already handled this net_id
+        }
+        let shared = if let Some(ServiceInfo::Registered(reg)) = services.get(name) {
+            reg.has_clients_with_net_id(*net_id)
+        } else {
+            false
+        };
+        if !shared {
+            orchestrator
+                .send_net_teardown(
+                    *client_ip,
+                    client_docker.clone(),
+                    *service_ip,
+                    service_docker.clone(),
+                    *net_id,
+                )
+                .await;
         }
     }
 }
 
-/// Walk the dependency chain starting from a specific service replica and
-/// decrement `active_chains` at each level. If an edge reaches 0, its VXLAN
-/// is torn down. Handles arbitrary chain lengths (A→B→C→…).
-async fn teardown_dep_chain(
+/// Walk the dependency chain starting from a specific service replica (read-only)
+/// and collect the `(client, dep_service_name)` edges.
+/// Handles arbitrary chain lengths (A→B→C→…).
+pub(crate) fn collect_dep_chain_edges(
     service_name: &str,
     replica_ip: IpAddr,
     replica_docker: Option<&str>,
-    services: &mut HashMap<String, ServiceInfo>,
-    orchestrator: &Orchestrator,
-) {
+    services: &HashMap<String, ServiceInfo>,
+) -> Vec<(Client, String)> {
+    let mut edges = Vec::new();
     let mut current_name = service_name.to_string();
     let mut current_ip = replica_ip;
     let mut current_docker: Option<String> = replica_docker.map(String::from);
@@ -305,19 +318,14 @@ async fn teardown_dep_chain(
 
         let mut next = None;
         for dep_name in &deps {
-            // Find which server replica this client is on (before decrementing)
             let hop = if let Some(ServiceInfo::Registered(dep_reg)) = services.get(dep_name) {
                 dep_reg.client_replica(&client)
             } else {
                 None
             };
 
-            // Decrement / tear down this edge
-            if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(dep_name) {
-                dep_reg.decrement_chain(&client, orchestrator).await;
-            }
+            edges.push((client.clone(), dep_name.clone()));
 
-            // Continue the walk from the server replica we were connected to
             if let Some((ip, docker)) = hop {
                 next = Some((dep_name.clone(), ip, docker));
             }
@@ -330,6 +338,26 @@ async fn teardown_dep_chain(
                 current_docker = docker;
             }
             None => break,
+        }
+    }
+
+    edges
+}
+
+/// Walk the dependency chain starting from a specific service replica and
+/// decrement `active_chains` at each level. If an edge reaches 0, its VXLAN
+/// is torn down. Handles arbitrary chain lengths (A→B→C→…).
+async fn teardown_dep_chain(
+    service_name: &str,
+    replica_ip: IpAddr,
+    replica_docker: Option<&str>,
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    let edges = collect_dep_chain_edges(service_name, replica_ip, replica_docker, services);
+    for (client, dep_name) in edges {
+        if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
+            dep_reg.decrement_chain(&client, orchestrator).await;
         }
     }
 }

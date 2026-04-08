@@ -1,0 +1,5 @@
+[[services]]
+name = "A"
+timeout = 1
+max_networks = 1
+dependencies = ["B"]
