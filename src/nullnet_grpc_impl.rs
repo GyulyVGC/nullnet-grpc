@@ -5,7 +5,9 @@ use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
     Empty, MsgId, NetMessage, NetType, ProxyRequest, Services, Upstream,
 };
-use crate::services::changes::{apply_changes, detect_services_list_changes};
+use crate::services::changes::{
+    apply_changes, collect_dep_chain_edges, detect_services_list_changes,
+};
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::RegisteredEdge;
 use crate::services::input::ServicesToml;
@@ -123,6 +125,37 @@ impl NullnetGrpcImpl {
                 reg.set_latest_now(&proxy_client);
             }
 
+            return Ok(Response::new(upstream));
+        }
+
+        // Max-networks: if the limit is reached, reuse the least-used existing
+        // network on the same proxy instead of creating a new one.
+        if let Some(max) = registered.max_networks()
+            && registered.proxy_clients_count() >= max as usize
+            && let Some((upstream, reused_client, replica_ip, replica_docker)) =
+                registered.find_reusable_network_on_proxy(proxy_ip)
+        {
+            println!(
+                "Max networks ({max}) reached for '{service_name}', \
+                 reusing network on proxy {proxy_ip}"
+            );
+            let mut services_mut = self.services.write().await;
+            // Increment chains on the proxy→service edge
+            if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(&service_name) {
+                reg.add_chain(&reused_client);
+            }
+            // Increment chains on each dependency edge
+            let dep_edges = collect_dep_chain_edges(
+                &service_name,
+                replica_ip,
+                replica_docker.as_deref(),
+                &services_mut,
+            );
+            for (client, dep_name) in dep_edges {
+                if let Some(ServiceInfo::Registered(dep_reg)) = services_mut.get_mut(&dep_name) {
+                    dep_reg.add_chain(&client);
+                }
+            }
             return Ok(Response::new(upstream));
         }
 

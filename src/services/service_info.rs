@@ -3,7 +3,7 @@ use crate::proto::nullnet_grpc::Upstream;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::edge::Edge;
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
@@ -13,10 +13,15 @@ pub(crate) enum ServiceInfo {
 }
 
 impl ServiceInfo {
-    pub(crate) fn new(dependencies: Vec<String>, is_proxy_reachable: Option<u64>) -> Self {
+    pub(crate) fn new(
+        dependencies: Vec<String>,
+        is_proxy_reachable: Option<u64>,
+        max_networks: Option<u32>,
+    ) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
             dependencies,
             is_proxy_reachable,
+            max_networks,
         ))
     }
 
@@ -26,6 +31,7 @@ impl ServiceInfo {
                 *self = ServiceInfo::Registered(RegisteredServiceInfo {
                     dependencies: unreg.dependencies.clone(),
                     is_proxy_reachable: unreg.is_proxy_reachable,
+                    max_networks: unreg.max_networks,
                     replicas: vec![Replica::new(ip, port, docker_container)],
                 });
             }
@@ -52,6 +58,7 @@ impl ServiceInfo {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
                     reg.dependencies.clone(),
                     reg.is_proxy_reachable,
+                    reg.max_networks,
                 ));
             }
         }
@@ -67,6 +74,7 @@ impl ServiceInfo {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
                     reg.dependencies.clone(),
                     reg.is_proxy_reachable,
+                    reg.max_networks,
                 ));
             }
         }
@@ -82,15 +90,25 @@ impl ServiceInfo {
     pub(crate) fn update_from_file(&mut self, loaded: &Self) {
         let loaded_dependencies = loaded.dependencies();
         let loaded_is_proxy_reachable = loaded.is_proxy_reachable();
+        let loaded_max_networks = loaded.max_networks();
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 unreg.dependencies = loaded_dependencies;
                 unreg.is_proxy_reachable = loaded_is_proxy_reachable;
+                unreg.max_networks = loaded_max_networks;
             }
             ServiceInfo::Registered(reg) => {
                 reg.dependencies = loaded_dependencies;
                 reg.is_proxy_reachable = loaded_is_proxy_reachable;
+                reg.max_networks = loaded_max_networks;
             }
+        }
+    }
+
+    pub(crate) fn max_networks(&self) -> Option<u32> {
+        match self {
+            ServiceInfo::Unregistered(unreg) => unreg.max_networks,
+            ServiceInfo::Registered(reg) => reg.max_networks,
         }
     }
 
@@ -108,13 +126,20 @@ pub(crate) struct UnregisteredServiceInfo {
     dependencies: Vec<String>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     is_proxy_reachable: Option<u64>,
+    /// Maximum number of networks for this service.
+    max_networks: Option<u32>,
 }
 
 impl UnregisteredServiceInfo {
-    fn new(dependencies: Vec<String>, is_proxy_reachable: Option<u64>) -> Self {
+    fn new(
+        dependencies: Vec<String>,
+        is_proxy_reachable: Option<u64>,
+        max_networks: Option<u32>,
+    ) -> Self {
         Self {
             dependencies,
             is_proxy_reachable,
+            max_networks,
         }
     }
 }
@@ -165,6 +190,8 @@ pub(crate) struct RegisteredServiceInfo {
     dependencies: Vec<String>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     is_proxy_reachable: Option<u64>,
+    /// Maximum number of networks for this service.
+    max_networks: Option<u32>,
     /// Replicas of this service.
     replicas: Vec<Replica>,
 }
@@ -259,6 +286,53 @@ impl RegisteredServiceInfo {
             .iter()
             .find(|r| r.clients.clients().contains_key(client))
             .map(|r| (r.ip, r.docker_container.clone()))
+    }
+
+    /// Count total proxy clients across all replicas.
+    pub(crate) fn proxy_clients_count(&self) -> usize {
+        self.replicas
+            .iter()
+            .flat_map(|r| r.clients.clients().keys())
+            .filter(|c| c.is_proxy().is_some())
+            .count()
+    }
+
+    /// Find the least-used proxy client on the given proxy IP.
+    /// Returns the upstream info, the client key, and the replica identity —
+    /// without mutating anything. The caller is responsible for incrementing
+    /// chains on this edge and on the dependency edges.
+    pub(crate) fn find_reusable_network_on_proxy(
+        &self,
+        proxy_ip: IpAddr,
+    ) -> Option<(Upstream, Client, IpAddr, Option<String>)> {
+        let best = self
+            .replicas
+            .iter()
+            .flat_map(|r| {
+                r.clients.clients().iter().filter_map(move |(c, ci)| {
+                    if c.is_proxy() == Some(proxy_ip) && ci.server_net() != Ipv4Addr::UNSPECIFIED {
+                        Some((c.clone(), ci.active_chains(), ci.server_net(), r))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .min_by_key(|(_, chains, _, _)| *chains);
+
+        let (client, _, server_net, replica) = best?;
+        Some((
+            Upstream {
+                ip: server_net.to_string(),
+                port: u32::from(replica.port),
+            },
+            client,
+            replica.ip,
+            replica.docker_container.clone(),
+        ))
+    }
+
+    pub(crate) fn max_networks(&self) -> Option<u32> {
+        self.max_networks
     }
 
     /// Select the replica with the fewest active clients.

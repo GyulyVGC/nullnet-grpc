@@ -206,9 +206,10 @@ async fn teardown_invalidated_service(
     if is_failed && let Some(si @ ServiceInfo::Registered(_)) = services.get(invalidated_service) {
         let deps = si.dependencies();
         let proxy = si.is_proxy_reachable();
+        let max_nets = si.max_networks();
         services.insert(
             invalidated_service.to_string(),
-            ServiceInfo::new(deps, proxy),
+            ServiceInfo::new(deps, proxy, max_nets),
         );
     }
 }
@@ -277,16 +278,16 @@ async fn teardown_chain(
     }
 }
 
-/// Walk the dependency chain starting from a specific service replica and
-/// decrement `active_chains` at each level. If an edge reaches 0, its VXLAN
-/// is torn down. Handles arbitrary chain lengths (A→B→C→…).
-async fn teardown_dep_chain(
+/// Walk the dependency chain starting from a specific service replica (read-only)
+/// and collect the `(client, dep_service_name)` edges.
+/// Handles arbitrary chain lengths (A→B→C→…).
+pub(crate) fn collect_dep_chain_edges(
     service_name: &str,
     replica_ip: IpAddr,
     replica_docker: Option<&str>,
-    services: &mut HashMap<String, ServiceInfo>,
-    orchestrator: &Orchestrator,
-) {
+    services: &HashMap<String, ServiceInfo>,
+) -> Vec<(Client, String)> {
+    let mut edges = Vec::new();
     let mut current_name = service_name.to_string();
     let mut current_ip = replica_ip;
     let mut current_docker: Option<String> = replica_docker.map(String::from);
@@ -305,19 +306,14 @@ async fn teardown_dep_chain(
 
         let mut next = None;
         for dep_name in &deps {
-            // Find which server replica this client is on (before decrementing)
             let hop = if let Some(ServiceInfo::Registered(dep_reg)) = services.get(dep_name) {
                 dep_reg.client_replica(&client)
             } else {
                 None
             };
 
-            // Decrement / tear down this edge
-            if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(dep_name) {
-                dep_reg.decrement_chain(&client, orchestrator).await;
-            }
+            edges.push((client.clone(), dep_name.clone()));
 
-            // Continue the walk from the server replica we were connected to
             if let Some((ip, docker)) = hop {
                 next = Some((dep_name.clone(), ip, docker));
             }
@@ -330,6 +326,26 @@ async fn teardown_dep_chain(
                 current_docker = docker;
             }
             None => break,
+        }
+    }
+
+    edges
+}
+
+/// Walk the dependency chain starting from a specific service replica and
+/// decrement `active_chains` at each level. If an edge reaches 0, its VXLAN
+/// is torn down. Handles arbitrary chain lengths (A→B→C→…).
+async fn teardown_dep_chain(
+    service_name: &str,
+    replica_ip: IpAddr,
+    replica_docker: Option<&str>,
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    let edges = collect_dep_chain_edges(service_name, replica_ip, replica_docker, services);
+    for (client, dep_name) in edges {
+        if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
+            dep_reg.decrement_chain(&client, orchestrator).await;
         }
     }
 }
