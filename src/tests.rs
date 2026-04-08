@@ -100,9 +100,9 @@ async fn setup_proxy_chain(
     client_ip: &str,
 ) {
     server
-        .new_proxy_chain(service_name, proxy_ip, client_ip)
+        .handle_proxy_request(service_name, proxy_ip, client_ip)
         .await
-        .expect("new_proxy_chain failed");
+        .expect("proxy request failed");
 }
 
 // ===========================================================================
@@ -1542,4 +1542,242 @@ async fn multi_replica_first_step_container_disconnect() {
     // Freed: proxy1→A + A(a1)→B = 2; remaining = 7
     drop(guard);
     assert_net_ids_in_use(&server, 7).await;
+}
+
+// ===========================================================================
+// max_networks: A→B, max_networks=1, timeout=1.
+// Two proxy clients on the same proxy: second reuses the first's network.
+// ===========================================================================
+
+const MAX_NETWORKS: &str = "max_networks";
+
+/// Full lifecycle:
+///   1. First client creates network (2 net IDs: proxy→A, A→B)
+///   2. Second client reuses (still 2 net IDs, but A has 2 proxy clients)
+///   3. First client times out (net stays up, A has 1 proxy client)
+///   4. Second client times out (net torn down, 0 net IDs)
+#[tokio::test]
+async fn max_networks_reuse_lifecycle() {
+    let services = load_fixture(MAX_NETWORKS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    let proxy1 = ip(5, 5, 5, 5);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy1).await;
+
+    // 1. First proxy client — creates fresh networks
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+    assert_net_ids_in_use(&server, 2).await; // proxy→A + A→B
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MAX_NETWORKS, "after_first_client.dot");
+        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        assert_eq!(reg_a.client_count(), 1, "A should have 1 proxy client");
+        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+            panic!("B should be registered");
+        };
+        assert_eq!(reg_b.client_count(), 1, "B should have 1 dep client (A→B)");
+    }
+
+    // 2. Second proxy client on same proxy — should reuse (max_networks=1)
+    //    Delay so the two clients have different `latest` timestamps,
+    //    allowing the first to time out independently.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.2").await;
+    assert_net_ids_in_use(&server, 2).await; // no new net IDs allocated
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MAX_NETWORKS, "after_reuse.dot");
+        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        assert_eq!(reg_a.client_count(), 2, "A should have 2 proxy clients");
+        // Both clients share the same net_id
+        let net_ids: HashSet<u32> = reg_a
+            .replicas()
+            .iter()
+            .flat_map(|r| r.clients().values().map(|ci| ci.net_id()))
+            .collect();
+        assert_eq!(
+            net_ids.len(),
+            1,
+            "both clients should share the same net_id"
+        );
+
+        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+            panic!("B should be registered");
+        };
+        assert_eq!(
+            reg_b.client_count(),
+            1,
+            "B should still have 1 dep client entry"
+        );
+    }
+
+    // 3. First client times out — network should stay up
+    //    C1 created at t=0, C2 at t≈0.5s. Sleep 600ms more → t≈1.1s.
+    //    C1 aged 1.1s (> 1s timeout) → expired. C2 aged 0.6s → alive.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+    {
+        let mut guard = server.services().write().await;
+        apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+        assert_graphviz(&guard, MAX_NETWORKS, "after_first_timeout.dot");
+
+        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        assert_eq!(
+            reg_a.client_count(),
+            1,
+            "A should have 1 proxy client after first timeout"
+        );
+        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+            panic!("B should be registered");
+        };
+        assert_eq!(
+            reg_b.client_count(),
+            1,
+            "B dep edge should survive (active_chains > 0)"
+        );
+    }
+    // Net IDs still in use (shared network not torn down)
+    assert_net_ids_in_use(&server, 2).await;
+
+    // 4. Second client times out — network should be torn down
+    //    C2 needs 0.4s more to reach 1s total. Sleep 500ms for margin.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    {
+        let mut guard = server.services().write().await;
+        apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+        assert_graphviz(&guard, MAX_NETWORKS, "after_second_timeout.dot");
+
+        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        assert!(
+            !reg_a.has_clients(),
+            "A should have no clients after both timeouts"
+        );
+        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+            panic!("B should be registered");
+        };
+        assert!(
+            !reg_b.has_clients(),
+            "B should have no clients after both timeouts"
+        );
+    }
+    // All networks torn down
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+/// Proxy disconnect tears down both clients sharing a net_id at once.
+/// The shared network should be torn down exactly once (dedup).
+#[tokio::test]
+async fn max_networks_proxy_disconnect() {
+    let services = load_fixture(MAX_NETWORKS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    let proxy1 = ip(5, 5, 5, 5);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy1).await;
+
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.2").await;
+    assert_net_ids_in_use(&server, 2).await;
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MAX_NETWORKS, "before_proxy_disconnect.dot");
+        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        assert_eq!(reg_a.client_count(), 2);
+    }
+
+    // Proxy disconnects — both clients torn down simultaneously
+    server
+        .orchestrator()
+        .handle_node_disconnect(proxy1, server.services())
+        .await;
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MAX_NETWORKS, "after_proxy_disconnect.dot");
+        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        assert!(
+            !reg_a.has_clients(),
+            "A should have no clients after proxy disconnect"
+        );
+        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+            panic!("B should be registered");
+        };
+        assert!(
+            !reg_b.has_clients(),
+            "B should have no clients after proxy disconnect"
+        );
+    }
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+/// When max_networks is reached on one proxy, a different proxy with no
+/// existing network falls through to new_proxy_chain (soft limit).
+#[tokio::test]
+async fn max_networks_different_proxy_bypasses() {
+    let services = load_fixture(MAX_NETWORKS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    let proxy1 = ip(5, 5, 5, 5);
+    let proxy2 = ip(6, 6, 6, 6);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy1).await;
+    server.orchestrator().register_fake_client(proxy2).await;
+
+    // First client on proxy1 — creates network
+    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
+    assert_net_ids_in_use(&server, 2).await;
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MAX_NETWORKS, "after_proxy1_client.dot");
+    }
+
+    // proxy2 connects — max_networks=1 is reached, but proxy2 has no existing
+    // network to reuse, so it falls through and creates a new one
+    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
+    assert_net_ids_in_use(&server, 3).await; // proxy1→A, proxy2→A, A→B (shared dep)
+
+    {
+        let guard = server.services().read().await;
+        assert_graphviz(&guard, MAX_NETWORKS, "after_proxy2_bypasses.dot");
+        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+            panic!("A should be registered");
+        };
+        assert_eq!(
+            reg_a.client_count(),
+            2,
+            "A should have 2 proxy clients (different proxies)"
+        );
+        // Both clients should have DIFFERENT net_ids
+        let net_ids: HashSet<u32> = reg_a
+            .replicas()
+            .iter()
+            .flat_map(|r| r.clients().values().map(|ci| ci.net_id()))
+            .collect();
+        assert_eq!(
+            net_ids.len(),
+            2,
+            "clients on different proxies should have different net_ids"
+        );
+    }
 }

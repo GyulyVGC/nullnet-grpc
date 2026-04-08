@@ -94,13 +94,25 @@ impl NullnetGrpcImpl {
         let client_ip: IpAddr = req.client_ip.parse().handle_err(location!())?;
         let service_name = req.service_name;
 
+        let upstream = self
+            .handle_proxy_request(&service_name, proxy_ip, &client_ip.to_string())
+            .await?;
+        Ok(Response::new(upstream))
+    }
+
+    pub(crate) async fn handle_proxy_request(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+    ) -> Result<Upstream, Error> {
         println!("Received proxy request for '{service_name}'");
 
         let service_info = self
             .services
             .read()
             .await
-            .get(&service_name)
+            .get(service_name)
             .cloned()
             .ok_or("Service not found")
             .handle_err(location!())?;
@@ -121,11 +133,11 @@ impl NullnetGrpcImpl {
 
             // update the latest timestamp for this client since it's being used again
             let mut services_mut = self.services.write().await;
-            if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(&service_name) {
+            if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(service_name) {
                 reg.set_latest_now(&proxy_client);
             }
 
-            return Ok(Response::new(upstream));
+            return Ok(upstream);
         }
 
         // Max-networks: if the limit is reached, reuse the least-used existing
@@ -140,7 +152,7 @@ impl NullnetGrpcImpl {
                  reusing network on proxy {proxy_ip}"
             );
             let mut services_mut = self.services.write().await;
-            if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(&service_name) {
+            if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(service_name) {
                 // Create a new Client entry sharing the existing network
                 let new_ci = ClientInfo::new(proxy_ip, client_net, server_net, net_id, 0, None);
                 reg.add_client_to_replica(
@@ -153,7 +165,7 @@ impl NullnetGrpcImpl {
             }
             // Increment chains on each dependency edge
             let dep_edges = collect_dep_chain_edges(
-                &service_name,
+                service_name,
                 replica_ip,
                 replica_docker.as_deref(),
                 &services_mut,
@@ -163,11 +175,13 @@ impl NullnetGrpcImpl {
                     dep_reg.add_chain(&dep_client);
                 }
             }
-            return Ok(Response::new(upstream));
+            return Ok(upstream);
         }
 
-        self.new_proxy_chain(&service_name, proxy_ip, &client_ip.to_string())
-            .await
+        let response = self
+            .new_proxy_chain(service_name, proxy_ip, client_ip)
+            .await?;
+        Ok(response.into_inner())
     }
 
     async fn services_list_impl(
