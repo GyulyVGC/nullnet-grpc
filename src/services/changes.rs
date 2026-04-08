@@ -258,22 +258,34 @@ async fn teardown_chain(
         .await;
     }
 
-    // Tear down proxy→service edges
-    for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
-        orchestrator
-            .send_net_teardown(
-                *client_ip,
-                client_docker.clone(),
-                *service_ip,
-                service_docker.clone(),
-                *net_id,
-            )
-            .await;
+    // Remove client entries first, then tear down proxy→service networks
+    // only if no other client still shares the same net_id.
+    let teardown_clients: Vec<Client> = proxy_teardowns
+        .iter()
+        .map(|(c, _, _, _, _, _)| c.clone())
+        .collect();
+    if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
+        for client in &teardown_clients {
+            reg.remove_client(client);
+        }
     }
 
-    if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
-        for (client, _, _, _, _, _) in proxy_teardowns {
-            reg.remove_client(&client);
+    for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
+        let shared = if let Some(ServiceInfo::Registered(reg)) = services.get(name) {
+            reg.has_other_clients_with_net_id(*net_id, &teardown_clients)
+        } else {
+            false
+        };
+        if !shared {
+            orchestrator
+                .send_net_teardown(
+                    *client_ip,
+                    client_docker.clone(),
+                    *service_ip,
+                    service_docker.clone(),
+                    *net_id,
+                )
+                .await;
         }
     }
 }

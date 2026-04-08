@@ -298,37 +298,56 @@ impl RegisteredServiceInfo {
     }
 
     /// Find the least-used proxy client on the given proxy IP.
-    /// Returns the upstream info, the client key, and the replica identity —
-    /// without mutating anything. The caller is responsible for incrementing
-    /// chains on this edge and on the dependency edges.
+    /// Returns the upstream, network IPs/ID, and replica identity —
+    /// everything the caller needs to create a new Client entry that
+    /// shares the same physical network.
+    #[allow(clippy::type_complexity)]
     pub(crate) fn find_reusable_network_on_proxy(
         &self,
         proxy_ip: IpAddr,
-    ) -> Option<(Upstream, Client, IpAddr, Option<String>)> {
+    ) -> Option<(Upstream, Ipv4Addr, Ipv4Addr, u32, IpAddr, Option<String>)> {
         let best = self
             .replicas
             .iter()
             .flat_map(|r| {
                 r.clients.clients().iter().filter_map(move |(c, ci)| {
                     if c.is_proxy() == Some(proxy_ip) && ci.server_net() != Ipv4Addr::UNSPECIFIED {
-                        Some((c.clone(), ci.active_chains(), ci.server_net(), r))
+                        Some((
+                            ci.active_chains(),
+                            ci.client_net(),
+                            ci.server_net(),
+                            ci.net_id(),
+                            r,
+                        ))
                     } else {
                         None
                     }
                 })
             })
-            .min_by_key(|(_, chains, _, _)| *chains);
+            .min_by_key(|(chains, _, _, _, _)| *chains);
 
-        let (client, _, server_net, replica) = best?;
+        let (_, client_net, server_net, net_id, replica) = best?;
         Some((
             Upstream {
                 ip: server_net.to_string(),
                 port: u32::from(replica.port),
             },
-            client,
+            client_net,
+            server_net,
+            net_id,
             replica.ip,
             replica.docker_container.clone(),
         ))
+    }
+
+    /// Check if any client other than those in `excluding` uses the given `net_id`.
+    pub(crate) fn has_other_clients_with_net_id(&self, net_id: u32, excluding: &[Client]) -> bool {
+        self.replicas.iter().any(|r| {
+            r.clients
+                .clients()
+                .iter()
+                .any(|(c, ci)| ci.net_id() == net_id && !excluding.contains(c))
+        })
     }
 
     pub(crate) fn max_networks(&self) -> Option<u32> {
