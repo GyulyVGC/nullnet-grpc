@@ -16,6 +16,8 @@ toml = "1.1.2"
 uuid = { version = "1.23.0", features = ["v4"] }
 ipnetwork = "0.21.1"
 notify = "8.2.0"
+gag = "1.0.0"
+chrono = "0.4.44"
 
 [build-dependencies]
 tonic-prost-build = "0.14.5"
