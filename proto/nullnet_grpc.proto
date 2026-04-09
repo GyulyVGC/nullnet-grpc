@@ -27,8 +27,8 @@ message NetType {
 }
 
 enum Net {
-  VLAN = 0;
-  VXLAN = 1;
+  VXLAN = 0;
+  VLAN = 1;
 }
 
 message NetMessage {

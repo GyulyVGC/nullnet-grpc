@@ -128,8 +128,8 @@ pub struct Empty {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum Net {
-    Vlan = 0,
-    Vxlan = 1,
+    Vxlan = 0,
+    Vlan = 1,
 }
 impl Net {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -138,15 +138,15 @@ impl Net {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Vlan => "VLAN",
             Self::Vxlan => "VXLAN",
+            Self::Vlan => "VLAN",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "VLAN" => Some(Self::Vlan),
             "VXLAN" => Some(Self::Vxlan),
+            "VLAN" => Some(Self::Vlan),
             _ => None,
         }
     }
