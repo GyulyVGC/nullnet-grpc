@@ -27,6 +27,11 @@ sudo mv protoc3/include/* /usr/local/include/
 
 ## Usage
 
+Repositories of the different components part of the architecture:
+- [nullnet-grpc-server](https://github.com/GyulyVGC/nullnet-grpc)
+- [nullnet-proxy-test](https://github.com/GyulyVGC/proxy-test)
+- [tun](https://github.com/GyulyVGC/tun)
+
 ### nullnet-grpc-server
 
 - set environment variables
