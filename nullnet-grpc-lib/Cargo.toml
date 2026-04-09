@@ -22,7 +22,7 @@ strip = true
 tonic = { version = "0.14.5", features = ["_tls-any", "tls-native-roots"] }
 prost = "0.14.3"
 tonic-prost = "0.14.5"
-tokio = "1.51.0"
+tokio = "1.51.1"
 serde = { version = "1.0.228", features = ["derive"] }
 
 [badges]
