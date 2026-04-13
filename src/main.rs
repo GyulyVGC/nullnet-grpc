@@ -22,14 +22,14 @@ const PORT: u16 = 50051;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let _gag1: gag::Redirect<std::fs::File>;
-    let _gag2: gag::Redirect<std::fs::File>;
-    if let Some((gag1, gag2)) = redirect_stdout_stderr_to_file() {
-        _gag1 = gag1;
-        _gag2 = gag2;
-    } else {
-        println!("Failed to redirect stdout and stderr to file, logs will be printed to console");
-    }
+    // let _gag1: gag::Redirect<std::fs::File>;
+    // let _gag2: gag::Redirect<std::fs::File>;
+    // if let Some((gag1, gag2)) = redirect_stdout_stderr_to_file() {
+    //     _gag1 = gag1;
+    //     _gag2 = gag2;
+    // } else {
+    //     println!("Failed to redirect stdout and stderr to file, logs will be printed to console");
+    // }
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), PORT);
 
@@ -67,22 +67,22 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
     NullnetGrpcImpl::new().await
 }
 
-fn redirect_stdout_stderr_to_file()
--> Option<(gag::Redirect<std::fs::File>, gag::Redirect<std::fs::File>)> {
-    let dir = "/var/log/nullnet";
-    create_dir_all(dir).handle_err(location!()).ok()?;
-    let timestamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S");
-    let file_path = format!("{dir}/grpc_{timestamp}.txt");
-    if let Ok(logs_file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file_path)
-    {
-        println!("Writing logs to '{file_path}'");
-        return Some((
-            gag::Redirect::stdout(logs_file.try_clone().ok()?).ok()?,
-            gag::Redirect::stderr(logs_file).ok()?,
-        ));
-    }
-    None
-}
+// fn redirect_stdout_stderr_to_file()
+// -> Option<(gag::Redirect<std::fs::File>, gag::Redirect<std::fs::File>)> {
+//     let dir = "/var/log/nullnet";
+//     create_dir_all(dir).handle_err(location!()).ok()?;
+//     let timestamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S");
+//     let file_path = format!("{dir}/grpc_{timestamp}.txt");
+//     if let Ok(logs_file) = std::fs::OpenOptions::new()
+//         .create(true)
+//         .append(true)
+//         .open(&file_path)
+//     {
+//         println!("Writing logs to '{file_path}'");
+//         return Some((
+//             gag::Redirect::stdout(logs_file.try_clone().ok()?).ok()?,
+//             gag::Redirect::stderr(logs_file).ok()?,
+//         ));
+//     }
+//     None
+// }
