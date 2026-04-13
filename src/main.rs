@@ -13,7 +13,6 @@ mod timeout;
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpcServer;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use std::fs::create_dir_all;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{panic, process};
 use tonic::transport::Server;
@@ -70,7 +69,7 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
 // fn redirect_stdout_stderr_to_file()
 // -> Option<(gag::Redirect<std::fs::File>, gag::Redirect<std::fs::File>)> {
 //     let dir = "/var/log/nullnet";
-//     create_dir_all(dir).handle_err(location!()).ok()?;
+//     std::fs::create_dir_all(dir).handle_err(location!()).ok()?;
 //     let timestamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S");
 //     let file_path = format!("{dir}/grpc_{timestamp}.txt");
 //     if let Ok(logs_file) = std::fs::OpenOptions::new()
