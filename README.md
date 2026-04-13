@@ -28,11 +28,13 @@ sudo mv protoc3/include/* /usr/local/include/
 ## Usage
 
 Repositories of the different components part of the architecture:
-- [nullnet-grpc-server](https://github.com/GyulyVGC/nullnet-grpc)
-- [nullnet-proxy-test](https://github.com/GyulyVGC/proxy-test)
-- [tun](https://github.com/GyulyVGC/tun)
+- [nullnet-server](https://github.com/NullNet-ai/nullnet-server)
+- [nullnet-proxy](https://github.com/NullNet-ai/nullnet-proxy)
+- [nullnet-client](https://github.com/NullNet-ai/nullnet-client)
 
-### nullnet-grpc-server
+Each of them needs to be cloned under the `/root` directory to correctly run as daemon with the provided `linux-setup.sh` scripts.
+
+### nullnet-server
 
 - set environment variables
 ```
@@ -52,17 +54,16 @@ max_networks = 3
 ...
 ```
 
-- run the project:
+- run the project as daemon with:
 ```
-cargo build --release
-sudo ./target/release/nullnet-grpc-server
+./linux-setup.sh
 ```
 
 - the server will regularly update a view of the network and store it in the file `./graph.dot`
 
 ***
 
-### nullnet-proxy-test
+### nullnet-proxy
 
 - set environment variables (set `CONTROL_SERVICE_ADDR` to the IP of nullnet-grpc-server)
 ```
@@ -70,17 +71,16 @@ CONTROL_SERVICE_ADDR=192.168.1.100
 CONTROL_SERVICE_PORT=50051
 ```
 
-- run the project:
+- run the project as daemon with:
 ```
-cargo build --release
-sudo ./target/release/nullnet-proxy-test
+./linux-setup.sh
 ```
 
 - the proxy will run on port 7777 and receive requests in the form `service_name:7777`
 
 ***
 
-### tun
+### nullnet-client
 
 - set environment variables (set `CONTROL_SERVICE_ADDR` to the IP of nullnet-grpc-server)
 ```
@@ -101,8 +101,7 @@ docker_container = "stack-name_container-name" # should correspond to the label 
 ...
 ```
 
-- run the project:
+- run the project as daemon with:
 ```
-cargo build --release
-sudo ./target/release/tun
+./linux-setup.sh
 ```
