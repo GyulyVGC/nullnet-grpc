@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/%H/nullnet-server
-EnvironmentFile=/home/%H/nullnet-server/.env
-ExecStart=/home/%H/nullnet-server/target/release/nullnet-server
+WorkingDirectory=/root/nullnet-server
+EnvironmentFile=/root/nullnet-server/.env
+ExecStart=/root/nullnet-server/target/release/nullnet-server
 Restart=always
 
 [Install]
