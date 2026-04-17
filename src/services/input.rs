@@ -57,7 +57,7 @@ impl ServicesToml {
             .watch(&services_directory, RecursiveMode::Recursive)
             .handle_err(location!())?;
 
-        let mut last_update_time = Instant::now().sub(Duration::from_secs(60));
+        let mut last_update_time = Instant::now().sub(Duration::from_mins(1));
 
         loop {
             let event = rx.recv().await;

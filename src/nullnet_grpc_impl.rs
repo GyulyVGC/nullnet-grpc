@@ -3,7 +3,7 @@ use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
-    Empty, MsgId, NetMessage, NetType, ProxyRequest, Services, Upstream,
+    BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest, Services, Upstream,
 };
 use crate::services::changes::{
     apply_changes, collect_dep_chain_edges, detect_services_list_changes,
@@ -47,9 +47,10 @@ impl NullnetGrpcImpl {
         let orchestrator_2 = orchestrator.clone();
         let config_changed_2 = config_changed.clone();
         tokio::spawn(async move {
-            ServicesToml::watch(&services_2, orchestrator_2, config_changed_2)
-                .await
-                .expect("failed to watch services.toml for changes");
+            if let Err(e) = ServicesToml::watch(&services_2, orchestrator_2, config_changed_2).await
+            {
+                eprintln!("failed to watch services.toml for changes: {e:?}");
+            }
         });
 
         // periodically check for timed-out proxy clients and tear down their chains
@@ -229,7 +230,10 @@ impl NullnetGrpcImpl {
             Some(ServiceInfo::Registered(reg)) => reg,
             _ => Err("Service is not registered").handle_err(location!())?,
         };
-        let replica = reg.pick_replica_least_clients();
+        let replica = reg
+            .pick_replica_least_clients()
+            .ok_or("Service has no replicas")
+            .handle_err(location!())?;
         let service_ip = replica.ip();
         let service_port = replica.port();
         let service_docker = replica.docker_container().map(String::from);
@@ -251,16 +255,12 @@ impl NullnetGrpcImpl {
         }))
     }
 
-    pub(crate) async fn setup_proxy_chain(
+    async fn build_dep_chain(
         &self,
         service_name: &str,
-        proxy_ip: IpAddr,
-        client_ip: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
-    ) -> Result<Ipv4Addr, Error> {
-        let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
-
+    ) -> Result<Vec<RegisteredEdge>, Error> {
         let guard = self.services.read().await;
         let service_info = guard
             .get(service_name)
@@ -277,25 +277,134 @@ impl NullnetGrpcImpl {
         );
         drop(guard);
 
-        let mut dep_chain: Vec<RegisteredEdge> = dep_chain
+        dep_chain
             .into_iter()
             .map(|edge| {
                 edge.into_registered()
                     .ok_or("Dependency not registered")
                     .handle_err(location!())
             })
-            .collect::<Result<_, Error>>()?;
+            .collect::<Result<_, Error>>()
+    }
+
+    pub(crate) async fn setup_proxy_chain(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+        service_ip: IpAddr,
+        service_docker: Option<&str>,
+    ) -> Result<Ipv4Addr, Error> {
+        let mut dep_chain = self
+            .build_dep_chain(service_name, service_ip, service_docker)
+            .await?;
 
         dep_chain.push(RegisteredEdge::new(
             proxy_ip,
-            proxy_client,
+            Client::new(client_ip.to_string(), Some(proxy_ip)),
             None,
             service_ip,
             Client::new(service_name.to_string(), None),
             service_docker.map(String::from),
         ));
 
-        self.net_chain_setup(dep_chain).await
+        self.net_chain_setup(dep_chain)
+            .await?
+            .ok_or("No valid upstream IP found after NET chain setup")
+            .handle_err(location!())
+    }
+
+    async fn backend_trigger_impl(
+        &self,
+        request: Request<BackendTriggerRequest>,
+    ) -> Result<Response<Empty>, Error> {
+        let sender_ip = request
+            .remote_addr()
+            .ok_or("Could not get remote address for backend trigger")
+            .handle_err(location!())?
+            .ip();
+
+        let initiator_name = request.into_inner().service_name;
+        self.handle_backend_trigger(&initiator_name, sender_ip)
+            .await?;
+        Ok(Response::new(Empty {}))
+    }
+
+    pub(crate) async fn handle_backend_trigger(
+        &self,
+        initiator_name: &str,
+        sender_ip: IpAddr,
+    ) -> Result<(), Error> {
+        println!("Received backend trigger for '{initiator_name}' from {sender_ip}");
+
+        let (initiator_ip, initiator_docker, first_dep_name) = {
+            let guard = self.services.read().await;
+            let si = guard
+                .get(initiator_name)
+                .ok_or("Initiator service not found")
+                .handle_err(location!())?;
+            if si.is_proxy_reachable().is_none() {
+                Err("Initiator service is not a configured entry point").handle_err(location!())?;
+            }
+            let ServiceInfo::Registered(reg) = si else {
+                Err("Initiator service is not registered").handle_err(location!())?
+            };
+            let replica = reg
+                .replicas()
+                .iter()
+                .find(|r| r.ip() == sender_ip)
+                .ok_or("No initiator replica found on sender host")
+                .handle_err(location!())?;
+            let first_dep = reg
+                .dependencies()
+                .first()
+                .cloned()
+                .ok_or("Initiator service has no dependencies")
+                .handle_err(location!())?;
+            (
+                replica.ip(),
+                replica.docker_container().map(String::from),
+                first_dep,
+            )
+        };
+
+        let initiator_client = Client::new_service(
+            initiator_name.to_string(),
+            initiator_ip,
+            initiator_docker.clone(),
+        );
+
+        // Heartbeat: if the initiator is already set up on its first dep, just refresh `latest`.
+        {
+            let mut services_mut = self.services.write().await;
+            if let Some(ServiceInfo::Registered(dep_reg)) = services_mut.get_mut(&first_dep_name)
+                && dep_reg.is_client_setup(&initiator_client).is_some()
+            {
+                dep_reg.set_latest_now(&initiator_client);
+                return Ok(());
+            }
+        }
+
+        self.setup_backend_chain(initiator_name, initiator_ip, initiator_docker.as_deref())
+            .await
+    }
+
+    pub(crate) async fn setup_backend_chain(
+        &self,
+        initiator_name: &str,
+        initiator_ip: IpAddr,
+        initiator_docker: Option<&str>,
+    ) -> Result<(), Error> {
+        let mut dep_chain = self
+            .build_dep_chain(initiator_name, initiator_ip, initiator_docker)
+            .await?;
+
+        if let Some(first) = dep_chain.first_mut() {
+            first.is_backend_entry = true;
+        }
+
+        self.net_chain_setup(dep_chain).await?;
+        Ok(())
     }
 
     pub(crate) async fn apply_services_list(
@@ -322,13 +431,14 @@ impl NullnetGrpcImpl {
     pub(crate) async fn net_chain_setup(
         &self,
         dep_chain: Vec<RegisteredEdge>,
-    ) -> Result<Ipv4Addr, Error> {
+    ) -> Result<Option<Ipv4Addr>, Error> {
         let mut join_set_outer = JoinSet::new();
         for edge in dep_chain {
             let (client_ethernet, client) = edge.client;
             let (server_ethernet, server) = edge.server;
             let client_docker = edge.client_docker;
             let server_docker = edge.server_docker;
+            let is_backend_entry = edge.is_backend_entry;
 
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
@@ -338,7 +448,7 @@ impl NullnetGrpcImpl {
                 let mut services_guard = services.write().await;
                 let Some(ServiceInfo::Registered(reg)) = services_guard.get_mut(server.name())
                 else {
-                    return None;
+                    return EdgeOutcome::Failed;
                 };
                 // Proxy edges: reuse if this client is already connected anywhere (stickiness).
                 // Dep edges: reuse only if this exact (client, server_replica) pair exists,
@@ -350,7 +460,11 @@ impl NullnetGrpcImpl {
                 };
                 if already_setup {
                     reg.add_chain(&client);
-                    return None;
+                    return EdgeOutcome::Success {
+                        client,
+                        server_name: server.name().to_string(),
+                        proxy_upstream: None,
+                    };
                 }
                 // reserve the slot so concurrent requests see it as in-progress
                 reg.add_client_to_replica(
@@ -370,7 +484,7 @@ impl NullnetGrpcImpl {
                     {
                         reg.remove_client(&client);
                     }
-                    return None;
+                    return EdgeOutcome::Failed;
                 };
 
                 let orch = orchestrator.clone();
@@ -408,11 +522,12 @@ impl NullnetGrpcImpl {
                     {
                         reg.remove_client(&client);
                     }
-                    return None;
+                    return EdgeOutcome::Failed;
                 }
 
-                let net_ip_server = server_ok?;
-                let net_ip_client = client_ok?;
+                let (Some(net_ip_server), Some(net_ip_client)) = (server_ok, client_ok) else {
+                    return EdgeOutcome::Failed;
+                };
 
                 println!("{server_ethernet} acknowledged");
                 println!("{client_ethernet} acknowledged");
@@ -428,7 +543,8 @@ impl NullnetGrpcImpl {
                         net_id,
                         time_ms,
                         client_docker.clone(),
-                    );
+                    )
+                    .with_backend_entry(is_backend_entry);
                     reg.add_client_to_replica(
                         server_ethernet,
                         server_docker.as_deref(),
@@ -448,27 +564,73 @@ impl NullnetGrpcImpl {
                             net_id,
                         )
                         .await;
+                    return EdgeOutcome::Failed;
                 }
 
-                if client.is_proxy().is_some() {
+                let proxy_upstream = if client.is_proxy().is_some() {
                     Some(net_ip_server)
                 } else {
                     None
+                };
+
+                EdgeOutcome::Success {
+                    client,
+                    server_name: server.name().to_string(),
+                    proxy_upstream,
                 }
             });
         }
 
-        let mut ret_val = None;
+        let mut successful: Vec<SuccessfulEdge> = Vec::new();
+        let mut any_failure = false;
         while let Some(res) = join_set_outer.join_next().await {
-            if let Ok(Some(upstream_ip)) = res {
-                ret_val = Some(upstream_ip);
+            match res {
+                Ok(EdgeOutcome::Success {
+                    client,
+                    server_name,
+                    proxy_upstream,
+                }) => {
+                    successful.push(SuccessfulEdge {
+                        client,
+                        server_name,
+                        proxy_upstream,
+                    });
+                }
+                Ok(EdgeOutcome::Failed) | Err(_) => {
+                    any_failure = true;
+                }
             }
         }
 
-        ret_val
-            .ok_or("No valid upstream IP found after NET chain setup")
-            .handle_err(location!())
+        if any_failure {
+            let mut services_mut = self.services.write().await;
+            for edge in &successful {
+                if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(&edge.server_name)
+                {
+                    reg.decrement_chain(&edge.client, &self.orchestrator).await;
+                }
+            }
+            Err("NET chain setup failed").handle_err(location!())?;
+        }
+
+        let upstream = successful.iter().find_map(|e| e.proxy_upstream);
+        Ok(upstream)
     }
+}
+
+enum EdgeOutcome {
+    Success {
+        client: Client,
+        server_name: String,
+        proxy_upstream: Option<Ipv4Addr>,
+    },
+    Failed,
+}
+
+struct SuccessfulEdge {
+    client: Client,
+    server_name: String,
+    proxy_upstream: Option<Ipv4Addr>,
 }
 
 #[cfg(test)]
@@ -523,6 +685,15 @@ impl NullnetGrpc for NullnetGrpcImpl {
 
     async fn proxy(&self, req: Request<ProxyRequest>) -> Result<Response<Upstream>, Status> {
         self.proxy_impl(req)
+            .await
+            .map_err(|err| Status::internal(err.to_str()))
+    }
+
+    async fn backend_trigger(
+        &self,
+        req: Request<BackendTriggerRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        self.backend_trigger_impl(req)
             .await
             .map_err(|err| Status::internal(err.to_str()))
     }

@@ -32,6 +32,7 @@ impl Edge {
                 server: (server_ip, self.server.1),
                 client_docker: self.client_docker,
                 server_docker: self.server_docker,
+                is_backend_entry: false,
             })
         } else {
             None
@@ -44,6 +45,8 @@ pub(crate) struct RegisteredEdge {
     pub(crate) server: (IpAddr, Client),
     pub(crate) client_docker: Option<String>,
     pub(crate) server_docker: Option<String>,
+    /// True iff this edge is the entry point of a backend-triggered chain.
+    pub(crate) is_backend_entry: bool,
 }
 
 impl RegisteredEdge {
@@ -60,6 +63,7 @@ impl RegisteredEdge {
             server: (server_ip, server),
             client_docker,
             server_docker,
+            is_backend_entry: false,
         }
     }
 }

@@ -24,6 +24,13 @@ pub(crate) enum ServiceChange {
     ProxyDisconnected { ip: IpAddr },
     /// A proxy client's timeout expired; tear down its chains.
     ProxyClientTimedOut { name: String, client: Client },
+    /// A backend-triggered chain's entry marker expired; tear down the chain
+    /// starting at the initiator replica.
+    BackendChainTimedOut {
+        initiator_name: String,
+        initiator_ip: IpAddr,
+        initiator_docker: Option<String>,
+    },
 }
 
 enum ProxyFilter<'a> {
@@ -496,6 +503,23 @@ pub(crate) async fn apply_changes(
                     services,
                     orchestrator,
                     ProxyFilter::ByClient(&client),
+                )
+                .await;
+            }
+            ServiceChange::BackendChainTimedOut {
+                initiator_name,
+                initiator_ip,
+                initiator_docker,
+            } => {
+                println!(
+                    "Backend chain initiated by '{initiator_name}' at {initiator_ip} timed out"
+                );
+                teardown_dep_chain(
+                    &initiator_name,
+                    initiator_ip,
+                    initiator_docker.as_deref(),
+                    services,
+                    orchestrator,
                 )
                 .await;
             }

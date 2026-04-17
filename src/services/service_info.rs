@@ -211,8 +211,11 @@ impl RegisteredServiceInfo {
         for dep in &self.dependencies {
             let (dep_ip, dep_docker) = match services.get(dep) {
                 Some(ServiceInfo::Registered(reg)) => {
-                    let r = reg.pick_replica_least_clients();
-                    (Some(r.ip), r.docker_container.clone())
+                    if let Some(r) = reg.pick_replica_least_clients() {
+                        (Some(r.ip), r.docker_container.clone())
+                    } else {
+                        (None, None)
+                    }
                 }
                 _ => (None, None),
             };
@@ -262,8 +265,9 @@ impl RegisteredServiceInfo {
         for replica in &mut self.replicas {
             if let Some(ci) = replica.clients.clients_mut().get_mut(client) {
                 ci.remove_active_chains(1);
-                if ci.active_chains() == 0 {
-                    let ci = replica.clients.clients_mut().remove(client).unwrap();
+                if ci.active_chains() == 0
+                    && let Some(ci) = replica.clients.clients_mut().remove(client)
+                {
                     orchestrator
                         .send_net_teardown(
                             ci.client_ip(),
@@ -352,11 +356,10 @@ impl RegisteredServiceInfo {
     }
 
     /// Select the replica with the fewest active clients.
-    pub(crate) fn pick_replica_least_clients(&self) -> &Replica {
+    pub(crate) fn pick_replica_least_clients(&self) -> Option<&Replica> {
         self.replicas
             .iter()
             .min_by_key(|r| r.clients.clients().len())
-            .expect("registered service has no replicas")
     }
 
     pub(crate) fn add_client_to_replica(
@@ -446,6 +449,23 @@ impl RegisteredServiceInfo {
                     .map(|(_, ci)| timeout.saturating_sub(now.duration_since(ci.latest())))
             })
             .min()
+    }
+
+    /// Collect backend-entry clients on this service (i.e. first-dep-edge
+    /// entries of chains initiated by other services). Each item carries the
+    /// initiator client and the `latest` instant from its `ClientInfo`.
+    pub(crate) fn backend_entry_clients(&self) -> Vec<(Client, Instant)> {
+        self.replicas
+            .iter()
+            .flat_map(|replica| {
+                replica
+                    .clients
+                    .clients()
+                    .iter()
+                    .filter(|(_, ci)| ci.is_backend_entry())
+                    .map(|(c, ci)| (c.clone(), ci.latest()))
+            })
+            .collect()
     }
 
     /// Return service-to-service client entries connected to replicas at the given IP.
