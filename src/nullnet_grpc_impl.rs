@@ -12,7 +12,7 @@ use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::RegisteredEdge;
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
-use crate::timeout::check_proxy_timeouts;
+use crate::timeout::check_timeouts;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -57,7 +57,7 @@ impl NullnetGrpcImpl {
         let services_2 = services.clone();
         let orchestrator_2 = orchestrator.clone();
         tokio::spawn(async move {
-            check_proxy_timeouts(services_2, orchestrator_2, config_changed).await;
+            check_timeouts(services_2, orchestrator_2, config_changed).await;
         });
 
         Ok(NullnetGrpcImpl {
@@ -118,8 +118,8 @@ impl NullnetGrpcImpl {
             .ok_or("Service not found")
             .handle_err(location!())?;
 
-        if service_info.is_proxy_reachable().is_none() {
-            Err("Service is not reachable via proxy").handle_err(location!())?;
+        if service_info.timeout().is_none() {
+            Err("Service is not a configured entry point").handle_err(location!())?;
         }
 
         let ServiceInfo::Registered(registered) = service_info else {
@@ -343,7 +343,7 @@ impl NullnetGrpcImpl {
                 .get(initiator_name)
                 .ok_or("Initiator service not found")
                 .handle_err(location!())?;
-            if si.is_proxy_reachable().is_none() {
+            if si.timeout().is_none() {
                 Err("Initiator service is not a configured entry point").handle_err(location!())?;
             }
             let ServiceInfo::Registered(reg) = si else {

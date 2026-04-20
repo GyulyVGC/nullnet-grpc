@@ -73,11 +73,11 @@ impl ServiceInfo {
     }
 
     fn graphviz_style(&self) -> &'static str {
-        let is_proxy_reachable = self.is_proxy_reachable().is_some();
+        let is_entry_point = self.timeout().is_some();
         match self {
-            ServiceInfo::Unregistered(_) if is_proxy_reachable => "[style=solid, color=red]",
+            ServiceInfo::Unregistered(_) if is_entry_point => "[style=solid, color=red]",
             ServiceInfo::Unregistered(_) => "[style=dashed, color=red]",
-            ServiceInfo::Registered(_) if is_proxy_reachable => "[style=solid, color=green]",
+            ServiceInfo::Registered(_) if is_entry_point => "[style=solid, color=green]",
             ServiceInfo::Registered(_) => "[style=dashed, color=green]",
         }
     }

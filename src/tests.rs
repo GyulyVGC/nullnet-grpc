@@ -4,7 +4,7 @@ use crate::graphviz::render_graphviz;
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::services::input::{ServicesToml, apply_config_update};
 use crate::services::service_info::ServiceInfo;
-use crate::timeout::apply_proxy_timeouts;
+use crate::timeout::apply_timeouts;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -334,7 +334,7 @@ async fn reachability_changed_unreachable_B() {
     assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_B.dot");
 
     assert!(guard.contains_key("B"));
-    assert!(guard["B"].is_proxy_reachable().is_none());
+    assert!(guard["B"].timeout().is_none());
 }
 
 /// D removed from [[services]] and no other service depends on it, so D and E
@@ -632,7 +632,7 @@ async fn proxy_timeout_A() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     let mut guard = server.services().write().await;
-    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    apply_timeouts(&mut guard, server.orchestrator()).await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
 
     // A is still registered but has no proxy clients
@@ -656,14 +656,14 @@ async fn proxy_timeout_A_then_B() {
     // A expires after 1s
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut guard = server.services().write().await;
-    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    apply_timeouts(&mut guard, server.orchestrator()).await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
     drop(guard);
 
     // B expires after 2s total
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut guard = server.services().write().await;
-    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    apply_timeouts(&mut guard, server.orchestrator()).await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A_then_B.dot");
 
     // all services still registered, but no proxy clients left
@@ -690,7 +690,7 @@ async fn proxy_timeout_all_at_once() {
     tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
 
     let mut guard = server.services().write().await;
-    apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+    apply_timeouts(&mut guard, server.orchestrator()).await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_all.dot");
 
     for (_, si) in guard.iter() {
@@ -746,7 +746,7 @@ async fn proxy_timeout_config_remove_timeout_A() {
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_config_remove_timeout_A.dot");
 
     // A's timeout was removed — no expiry, clients still present
-    assert_eq!(guard["A"].is_proxy_reachable(), Some(0));
+    assert_eq!(guard["A"].timeout(), Some(0));
     if let ServiceInfo::Registered(reg) = &guard["A"] {
         assert_eq!(reg.client_count(), 2);
     }
@@ -1626,7 +1626,7 @@ async fn max_networks_reuse_lifecycle() {
 
     {
         let mut guard = server.services().write().await;
-        apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+        apply_timeouts(&mut guard, server.orchestrator()).await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_first_timeout.dot");
 
         let ServiceInfo::Registered(reg_a) = &guard["A"] else {
@@ -1655,7 +1655,7 @@ async fn max_networks_reuse_lifecycle() {
 
     {
         let mut guard = server.services().write().await;
-        apply_proxy_timeouts(&mut guard, server.orchestrator()).await;
+        apply_timeouts(&mut guard, server.orchestrator()).await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_second_timeout.dot");
 
         let ServiceInfo::Registered(reg_a) = &guard["A"] else {

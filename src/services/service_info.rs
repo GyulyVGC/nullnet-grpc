@@ -15,12 +15,12 @@ pub(crate) enum ServiceInfo {
 impl ServiceInfo {
     pub(crate) fn new(
         dependencies: Vec<String>,
-        is_proxy_reachable: Option<u64>,
+        timeout: Option<u64>,
         max_networks: Option<u32>,
     ) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
             dependencies,
-            is_proxy_reachable,
+            timeout,
             max_networks,
         ))
     }
@@ -30,7 +30,7 @@ impl ServiceInfo {
             ServiceInfo::Unregistered(unreg) => {
                 *self = ServiceInfo::Registered(RegisteredServiceInfo {
                     dependencies: unreg.dependencies.clone(),
-                    is_proxy_reachable: unreg.is_proxy_reachable,
+                    timeout: unreg.timeout,
                     max_networks: unreg.max_networks,
                     replicas: vec![Replica::new(ip, port, docker_container)],
                 });
@@ -57,7 +57,7 @@ impl ServiceInfo {
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
                     reg.dependencies.clone(),
-                    reg.is_proxy_reachable,
+                    reg.timeout,
                     reg.max_networks,
                 ));
             }
@@ -73,33 +73,33 @@ impl ServiceInfo {
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
                     reg.dependencies.clone(),
-                    reg.is_proxy_reachable,
+                    reg.timeout,
                     reg.max_networks,
                 ));
             }
         }
     }
 
-    pub(crate) fn is_proxy_reachable(&self) -> Option<u64> {
+    pub(crate) fn timeout(&self) -> Option<u64> {
         match self {
-            ServiceInfo::Unregistered(unreg) => unreg.is_proxy_reachable,
-            ServiceInfo::Registered(reg) => reg.is_proxy_reachable,
+            ServiceInfo::Unregistered(unreg) => unreg.timeout,
+            ServiceInfo::Registered(reg) => reg.timeout,
         }
     }
 
     pub(crate) fn update_from_file(&mut self, loaded: &Self) {
         let loaded_dependencies = loaded.dependencies();
-        let loaded_is_proxy_reachable = loaded.is_proxy_reachable();
+        let loaded_timeout = loaded.timeout();
         let loaded_max_networks = loaded.max_networks();
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 unreg.dependencies = loaded_dependencies;
-                unreg.is_proxy_reachable = loaded_is_proxy_reachable;
+                unreg.timeout = loaded_timeout;
                 unreg.max_networks = loaded_max_networks;
             }
             ServiceInfo::Registered(reg) => {
                 reg.dependencies = loaded_dependencies;
-                reg.is_proxy_reachable = loaded_is_proxy_reachable;
+                reg.timeout = loaded_timeout;
                 reg.max_networks = loaded_max_networks;
             }
         }
@@ -125,20 +125,16 @@ pub(crate) struct UnregisteredServiceInfo {
     /// Dependencies of the service.
     dependencies: Vec<String>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
-    is_proxy_reachable: Option<u64>,
+    timeout: Option<u64>,
     /// Maximum number of networks for this service.
     max_networks: Option<u32>,
 }
 
 impl UnregisteredServiceInfo {
-    fn new(
-        dependencies: Vec<String>,
-        is_proxy_reachable: Option<u64>,
-        max_networks: Option<u32>,
-    ) -> Self {
+    fn new(dependencies: Vec<String>, timeout: Option<u64>, max_networks: Option<u32>) -> Self {
         Self {
             dependencies,
-            is_proxy_reachable,
+            timeout,
             max_networks,
         }
     }
@@ -189,7 +185,7 @@ pub(crate) struct RegisteredServiceInfo {
     /// Dependencies of the service.
     dependencies: Vec<String>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
-    is_proxy_reachable: Option<u64>,
+    timeout: Option<u64>,
     /// Maximum number of networks for this service.
     max_networks: Option<u32>,
     /// Replicas of this service.

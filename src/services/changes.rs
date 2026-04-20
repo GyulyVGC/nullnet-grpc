@@ -10,7 +10,7 @@ pub(crate) enum ServiceChange {
     Removed { name: String },
     /// Service dependencies changed in config.
     DepsChanged { name: String },
-    /// Service `proxy_reachable` flag toggled in config.
+    /// Service entry-point timeout toggled in config (Some ↔ None).
     ReachabilityChanged { name: String },
     /// All replicas on a specific IP were removed (node disconnected).
     ReplicasRemoved { name: String, ip: IpAddr },
@@ -79,15 +79,12 @@ pub(crate) fn detect_config_changes(
         if let Some(old_info) = current.get(name) {
             if loaded_info.dependencies() != old_info.dependencies() {
                 changes.push(ServiceChange::DepsChanged { name: name.clone() });
-            } else if loaded_info.is_proxy_reachable().is_some()
-                != old_info.is_proxy_reachable().is_some()
-            {
+            } else if loaded_info.timeout().is_some() != old_info.timeout().is_some() {
                 // reachability toggled (Some <-> None)
                 changes.push(ServiceChange::ReachabilityChanged { name: name.clone() });
-            } else if let (Some(new_timeout), Some(old_timeout)) = (
-                loaded_info.is_proxy_reachable(),
-                old_info.is_proxy_reachable(),
-            ) && new_timeout != old_timeout
+            } else if let (Some(new_timeout), Some(old_timeout)) =
+                (loaded_info.timeout(), old_info.timeout())
+                && new_timeout != old_timeout
                 && new_timeout > 0
                 && (old_timeout == 0 || new_timeout < old_timeout)
             {
@@ -212,7 +209,7 @@ async fn teardown_invalidated_service(
 
     if is_failed && let Some(si @ ServiceInfo::Registered(_)) = services.get(invalidated_service) {
         let deps = si.dependencies();
-        let proxy = si.is_proxy_reachable();
+        let proxy = si.timeout();
         let max_nets = si.max_networks();
         services.insert(
             invalidated_service.to_string(),
