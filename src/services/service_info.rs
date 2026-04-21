@@ -14,12 +14,14 @@ pub(crate) enum ServiceInfo {
 
 impl ServiceInfo {
     pub(crate) fn new(
-        dependencies: Vec<String>,
+        proxy_deps: Vec<String>,
+        backend_deps: Vec<Vec<String>>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
     ) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-            dependencies,
+            proxy_deps,
+            backend_deps,
             timeout,
             max_networks,
         ))
@@ -29,7 +31,8 @@ impl ServiceInfo {
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 *self = ServiceInfo::Registered(RegisteredServiceInfo {
-                    dependencies: unreg.dependencies.clone(),
+                    proxy_deps: unreg.proxy_deps.clone(),
+                    backend_deps: unreg.backend_deps.clone(),
                     timeout: unreg.timeout,
                     max_networks: unreg.max_networks,
                     replicas: vec![Replica::new(ip, port, docker_container)],
@@ -56,7 +59,8 @@ impl ServiceInfo {
             reg.replicas.retain(|r| r.ip != ip);
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-                    reg.dependencies.clone(),
+                    reg.proxy_deps.clone(),
+                    reg.backend_deps.clone(),
                     reg.timeout,
                     reg.max_networks,
                 ));
@@ -72,7 +76,8 @@ impl ServiceInfo {
                 .retain(|r| !r.matches_identity(ip, docker_container));
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-                    reg.dependencies.clone(),
+                    reg.proxy_deps.clone(),
+                    reg.backend_deps.clone(),
                     reg.timeout,
                     reg.max_networks,
                 ));
@@ -88,17 +93,18 @@ impl ServiceInfo {
     }
 
     pub(crate) fn update_from_file(&mut self, loaded: &Self) {
-        let loaded_dependencies = loaded.dependencies();
         let loaded_timeout = loaded.timeout();
         let loaded_max_networks = loaded.max_networks();
         match self {
             ServiceInfo::Unregistered(unreg) => {
-                unreg.dependencies = loaded_dependencies;
+                unreg.proxy_deps = loaded.proxy_deps().to_vec();
+                unreg.backend_deps = loaded.backend_deps().to_vec();
                 unreg.timeout = loaded_timeout;
                 unreg.max_networks = loaded_max_networks;
             }
             ServiceInfo::Registered(reg) => {
-                reg.dependencies = loaded_dependencies;
+                reg.proxy_deps = loaded.proxy_deps().to_vec();
+                reg.backend_deps = loaded.backend_deps().to_vec();
                 reg.timeout = loaded_timeout;
                 reg.max_networks = loaded_max_networks;
             }
@@ -112,18 +118,34 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn dependencies(&self) -> Vec<String> {
+    pub(crate) fn proxy_deps(&self) -> &[String] {
         match self {
-            ServiceInfo::Unregistered(unreg) => unreg.dependencies.clone(),
-            ServiceInfo::Registered(reg) => reg.dependencies.clone(),
+            ServiceInfo::Unregistered(unreg) => &unreg.proxy_deps,
+            ServiceInfo::Registered(reg) => &reg.proxy_deps,
         }
+    }
+
+    pub(crate) fn backend_deps(&self) -> &[Vec<String>] {
+        match self {
+            ServiceInfo::Unregistered(unreg) => &unreg.backend_deps,
+            ServiceInfo::Registered(reg) => &reg.backend_deps,
+        }
+    }
+
+    /// True iff `other` appears in any of this service's dep lists (proxy or backend).
+    pub(crate) fn deps_contain(&self, other: &str) -> bool {
+        self.proxy_deps().iter().any(|d| d == other)
+            || self.backend_deps().iter().flatten().any(|d| d == other)
     }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct UnregisteredServiceInfo {
-    /// Dependencies of the service.
-    dependencies: Vec<String>,
+    /// Linear dep chain walked on proxy-triggered setup.
+    proxy_deps: Vec<String>,
+    /// Parallel dep chains walked on backend-triggered setup.
+    /// Each inner `Vec<String>` is one linear chain; fan-out = outer length.
+    backend_deps: Vec<Vec<String>>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
@@ -131,9 +153,15 @@ pub(crate) struct UnregisteredServiceInfo {
 }
 
 impl UnregisteredServiceInfo {
-    fn new(dependencies: Vec<String>, timeout: Option<u64>, max_networks: Option<u32>) -> Self {
+    fn new(
+        proxy_deps: Vec<String>,
+        backend_deps: Vec<Vec<String>>,
+        timeout: Option<u64>,
+        max_networks: Option<u32>,
+    ) -> Self {
         Self {
-            dependencies,
+            proxy_deps,
+            backend_deps,
             timeout,
             max_networks,
         }
@@ -182,8 +210,11 @@ impl Replica {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RegisteredServiceInfo {
-    /// Dependencies of the service.
-    dependencies: Vec<String>,
+    /// Linear dep chain walked on proxy-triggered setup.
+    proxy_deps: Vec<String>,
+    /// Parallel dep chains walked on backend-triggered setup.
+    /// Each inner `Vec<String>` is one linear chain; fan-out = outer length.
+    backend_deps: Vec<Vec<String>>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
@@ -193,46 +224,44 @@ pub(crate) struct RegisteredServiceInfo {
 }
 
 impl RegisteredServiceInfo {
-    pub(crate) fn dependency_chain(
+    /// Build the linear chain of edges for a proxy-triggered chain.
+    pub(crate) fn proxy_dependency_chain(
         &self,
         service_name: String,
         service_ip: IpAddr,
         service_docker: Option<&str>,
         services: &HashMap<String, ServiceInfo>,
     ) -> Vec<Edge> {
-        let mut chain = Vec::new();
-        let mut current_ip: Option<IpAddr> = Some(service_ip);
-        let mut current_docker: Option<String> = service_docker.map(String::from);
-        let mut current_name = service_name;
-        for dep in &self.dependencies {
-            let (dep_ip, dep_docker) = match services.get(dep) {
-                Some(ServiceInfo::Registered(reg)) => {
-                    if let Some(r) = reg.pick_replica_least_clients() {
-                        (Some(r.ip), r.docker_container.clone())
-                    } else {
-                        (None, None)
-                    }
-                }
-                _ => (None, None),
-            };
-            let client = match current_ip {
-                Some(ip) => Client::new_service(current_name.clone(), ip, current_docker.clone()),
-                None => Client::new(current_name.clone(), None),
-            };
-            let edge = Edge::new(
-                current_ip,
-                client,
-                current_docker,
-                dep_ip,
-                Client::new(dep.clone(), None),
-                dep_docker.clone(),
-            );
-            chain.push(edge);
-            current_ip = dep_ip;
-            current_docker = dep_docker;
-            current_name.clone_from(dep);
-        }
-        chain
+        build_linear_chain(
+            &self.proxy_deps,
+            service_name,
+            service_ip,
+            service_docker,
+            services,
+        )
+    }
+
+    /// Build one chain of edges per inner array in `backend_deps`.
+    /// Each chain starts at this service's replica; fan-out is explicit.
+    pub(crate) fn backend_dependency_chains(
+        &self,
+        service_name: &str,
+        service_ip: IpAddr,
+        service_docker: Option<&str>,
+        services: &HashMap<String, ServiceInfo>,
+    ) -> Vec<Vec<Edge>> {
+        self.backend_deps
+            .iter()
+            .map(|chain| {
+                build_linear_chain(
+                    chain,
+                    service_name.to_string(),
+                    service_ip,
+                    service_docker,
+                    services,
+                )
+            })
+            .collect()
     }
 
     /// Invariant: a given `Client` exists on exactly one replica (sticky sessions).
@@ -411,8 +440,8 @@ impl RegisteredServiceInfo {
         &self.replicas
     }
 
-    pub(crate) fn dependencies(&self) -> &Vec<String> {
-        &self.dependencies
+    pub(crate) fn backend_deps(&self) -> &[Vec<String>] {
+        &self.backend_deps
     }
 
     pub(crate) fn expired_proxy_clients(&self, timeout: Duration) -> Vec<Client> {
@@ -525,4 +554,47 @@ impl RegisteredServiceInfo {
             })
             .collect()
     }
+}
+
+/// Build a linear chain of edges from `start` → deps[0] → deps[1] → … → deps[N-1].
+fn build_linear_chain(
+    deps: &[String],
+    service_name: String,
+    service_ip: IpAddr,
+    service_docker: Option<&str>,
+    services: &HashMap<String, ServiceInfo>,
+) -> Vec<Edge> {
+    let mut chain = Vec::new();
+    let mut current_ip: Option<IpAddr> = Some(service_ip);
+    let mut current_docker: Option<String> = service_docker.map(String::from);
+    let mut current_name = service_name;
+    for dep in deps {
+        let (dep_ip, dep_docker) = match services.get(dep) {
+            Some(ServiceInfo::Registered(reg)) => {
+                if let Some(r) = reg.pick_replica_least_clients() {
+                    (Some(r.ip()), r.docker_container().map(String::from))
+                } else {
+                    (None, None)
+                }
+            }
+            _ => (None, None),
+        };
+        let client = match current_ip {
+            Some(ip) => Client::new_service(current_name.clone(), ip, current_docker.clone()),
+            None => Client::new(current_name.clone(), None),
+        };
+        let edge = Edge::new(
+            current_ip,
+            client,
+            current_docker,
+            dep_ip,
+            Client::new(dep.clone(), None),
+            dep_docker.clone(),
+        );
+        chain.push(edge);
+        current_ip = dep_ip;
+        current_docker = dep_docker;
+        current_name.clone_from(dep);
+    }
+    chain
 }

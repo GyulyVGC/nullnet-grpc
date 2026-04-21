@@ -1,6 +1,6 @@
 <mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.0.6 Chrome/138.0.7204.100 Electron/37.2.3 Safari/537.36" version="28.0.6">
   <diagram name="Nullnet Architecture" id="nullnet-arch">
-    <mxGraphModel dx="1123" dy="827" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+    <mxGraphModel dx="582" dy="429" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -46,23 +46,20 @@
         <mxCell id="server_port" value="&lt;b&gt;:50051&lt;/b&gt; gRPC / HTTP2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;fontSize=12;fontStyle=1;fontColor=#000000;" parent="1" vertex="1">
           <mxGeometry x="790" y="350" width="260" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="rpc_nettype" value="NetworkType()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
-          <mxGeometry x="790" y="405" width="120" height="30" as="geometry" />
+        <mxCell id="rpc_nettype" value="NetworkType()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B9E0A5;strokeColor=#9673A6;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
+          <mxGeometry x="930" y="450" width="120" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="rpc_svclist" value="ServicesList()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
-          <mxGeometry x="930" y="405" width="120" height="30" as="geometry" />
+        <mxCell id="rpc_svclist" value="ServicesList()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B9E0A5;strokeColor=#9673A6;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
+          <mxGeometry x="930" y="488" width="120" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="rpc_control" value="ControlChannel()&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;bidirectional stream&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
-          <mxGeometry x="790" y="450" width="120" height="45" as="geometry" />
+        <mxCell id="rpc_control" value="ControlChannel()&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;bidirectional stream&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B9E0A5;strokeColor=#9673A6;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
+          <mxGeometry x="790" y="458" width="120" height="45" as="geometry" />
         </mxCell>
         <mxCell id="rpc_proxy" value="Proxy()&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;→ Upstream{ip, port}&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
-          <mxGeometry x="930" y="450" width="120" height="45" as="geometry" />
+          <mxGeometry x="790" y="398" width="120" height="45" as="geometry" />
         </mxCell>
         <mxCell id="rpc_backend" value="&lt;b&gt;BackendTrigger()&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;→ Empty (ack)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
-          <mxGeometry x="790" y="510" width="120" height="45" as="geometry" />
-        </mxCell>
-        <mxCell id="server_internals" value="&lt;font style=&quot;font-size:10px&quot;&gt;&lt;b&gt;Internals:&lt;/b&gt;&lt;br&gt;services.toml (config)&lt;br&gt;Orchestrator (NET setup/teardown)&lt;br&gt;Timeout walker (proxy + backend)&lt;br&gt;graph.dot (Graphviz)&lt;/font&gt;" style="text;html=1;align=left;verticalAlign=top;fontSize=10;fontColor=#000000;" parent="1" vertex="1">
-          <mxGeometry x="790" y="570" width="260" height="80" as="geometry" />
+          <mxGeometry x="790" y="518" width="120" height="45" as="geometry" />
         </mxCell>
         <mxCell id="arr_ext_proxy" value="&lt;font style=&quot;font-size:10px&quot;&gt;HTTP &lt;b&gt;service_name:80&lt;/b&gt;&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6C8EBF;strokeWidth=2;fontColor=#000000;labelBackgroundColor=#FFFFFF;" parent="1" source="ext_client" target="proxy_port80" edge="1">
           <mxGeometry relative="1" as="geometry" />
@@ -74,6 +71,11 @@
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="510" y="399" as="sourcePoint" />
             <mxPoint x="990.0588235294117" y="444" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="510" y="400" />
+              <mxPoint x="651" y="400" />
+              <mxPoint x="651" y="421" />
+            </Array>
           </mxGeometry>
         </mxCell>
         <mxCell id="arr_client_backend_rpc" value="&lt;font style=&quot;font-size:10px&quot;&gt;gRPC &lt;b&gt;BackendTrigger()&lt;/b&gt;&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#D6B656;strokeWidth=2;dashed=1;fontColor=#000000;labelBackgroundColor=#FFFFFF;" parent="1" target="rpc_backend" edge="1">

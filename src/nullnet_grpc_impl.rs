@@ -6,15 +6,15 @@ use crate::proto::nullnet_grpc::{
     BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest, Services, Upstream,
 };
 use crate::services::changes::{
-    apply_changes, collect_dep_chain_edges, detect_services_list_changes,
+    DepRole, apply_changes, collect_dep_chain_edges, detect_services_list_changes,
 };
 use crate::services::clients::{Client, ClientInfo};
-use crate::services::edge::RegisteredEdge;
+use crate::services::edge::{Edge, RegisteredEdge};
 use crate::services::input::ServicesToml;
 use crate::services::service_info::ServiceInfo;
 use crate::timeout::check_timeouts;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock, mpsc};
@@ -170,6 +170,7 @@ impl NullnetGrpcImpl {
                 replica_ip,
                 replica_docker.as_deref(),
                 &services_mut,
+                DepRole::Proxy,
             );
             for (dep_client, dep_name) in dep_edges {
                 if let Some(ServiceInfo::Registered(dep_reg)) = services_mut.get_mut(&dep_name) {
@@ -255,7 +256,7 @@ impl NullnetGrpcImpl {
         }))
     }
 
-    async fn build_dep_chain(
+    async fn build_proxy_dep_chain(
         &self,
         service_name: &str,
         service_ip: IpAddr,
@@ -269,7 +270,7 @@ impl NullnetGrpcImpl {
         let ServiceInfo::Registered(registered) = service_info else {
             Err("Service is not registered").handle_err(location!())?
         };
-        let dep_chain = registered.dependency_chain(
+        let dep_chain = registered.proxy_dependency_chain(
             service_name.to_string(),
             service_ip,
             service_docker,
@@ -287,6 +288,39 @@ impl NullnetGrpcImpl {
             .collect::<Result<_, Error>>()
     }
 
+    /// Build one registered chain per inner array in the service's
+    /// `backend_dependencies`. Chains where any dep is unregistered are dropped
+    /// silently — a partially-registered fan-out still sets up the ready chains.
+    async fn build_backend_dep_chains(
+        &self,
+        service_name: &str,
+        service_ip: IpAddr,
+        service_docker: Option<&str>,
+    ) -> Result<Vec<Vec<RegisteredEdge>>, Error> {
+        let guard = self.services.read().await;
+        let service_info = guard
+            .get(service_name)
+            .ok_or("Service not found")
+            .handle_err(location!())?;
+        let ServiceInfo::Registered(registered) = service_info else {
+            Err("Service is not registered").handle_err(location!())?
+        };
+        let raw_chains =
+            registered.backend_dependency_chains(service_name, service_ip, service_docker, &guard);
+        drop(guard);
+
+        let chains = raw_chains
+            .into_iter()
+            .filter_map(|chain| {
+                chain
+                    .into_iter()
+                    .map(Edge::into_registered)
+                    .collect::<Option<Vec<_>>>()
+            })
+            .collect();
+        Ok(chains)
+    }
+
     pub(crate) async fn setup_proxy_chain(
         &self,
         service_name: &str,
@@ -296,7 +330,7 @@ impl NullnetGrpcImpl {
         service_docker: Option<&str>,
     ) -> Result<Ipv4Addr, Error> {
         let mut dep_chain = self
-            .build_dep_chain(service_name, service_ip, service_docker)
+            .build_proxy_dep_chain(service_name, service_ip, service_docker)
             .await?;
 
         dep_chain.push(RegisteredEdge::new(
@@ -337,8 +371,11 @@ impl NullnetGrpcImpl {
     ) -> Result<(), Error> {
         println!("Received backend trigger for '{initiator_name}' from {sender_ip}");
 
-        let (initiator_ip, initiator_docker, first_dep_name) = {
-            let guard = self.services.read().await;
+        // One write guard resolves the initiator replica, refreshes heartbeat
+        // on any first-dep edge already set up, and collects the first-dep
+        // names whose chains still need rebuilding.
+        let (initiator_ip, initiator_docker, rebuild) = {
+            let mut guard = self.services.write().await;
             let si = guard
                 .get(initiator_name)
                 .ok_or("Initiator service not found")
@@ -355,55 +392,78 @@ impl NullnetGrpcImpl {
                 .find(|r| r.ip() == sender_ip)
                 .ok_or("No initiator replica found on sender host")
                 .handle_err(location!())?;
-            let first_dep = reg
-                .dependencies()
-                .first()
-                .cloned()
-                .ok_or("Initiator service has no dependencies")
-                .handle_err(location!())?;
-            (
-                replica.ip(),
-                replica.docker_container().map(String::from),
-                first_dep,
-            )
+            let initiator_ip = replica.ip();
+            let initiator_docker = replica.docker_container().map(String::from);
+            let first_deps: Vec<String> = reg
+                .backend_deps()
+                .iter()
+                .filter_map(|chain| chain.first().cloned())
+                .collect();
+
+            let initiator_client = Client::new_service(
+                initiator_name.to_string(),
+                initiator_ip,
+                initiator_docker.clone(),
+            );
+
+            let mut rebuild: HashSet<String> = HashSet::new();
+            for first_dep in first_deps {
+                match guard.get_mut(&first_dep) {
+                    Some(ServiceInfo::Registered(dep_reg))
+                        if dep_reg.is_client_setup(&initiator_client).is_some() =>
+                    {
+                        dep_reg.set_latest_now(&initiator_client);
+                    }
+                    _ => {
+                        rebuild.insert(first_dep);
+                    }
+                }
+            }
+
+            (initiator_ip, initiator_docker, rebuild)
         };
 
-        let initiator_client = Client::new_service(
-            initiator_name.to_string(),
-            initiator_ip,
-            initiator_docker.clone(),
-        );
-
-        // Heartbeat: if the initiator is already set up on its first dep, just refresh `latest`.
-        {
-            let mut services_mut = self.services.write().await;
-            if let Some(ServiceInfo::Registered(dep_reg)) = services_mut.get_mut(&first_dep_name)
-                && dep_reg.is_client_setup(&initiator_client).is_some()
-            {
-                dep_reg.set_latest_now(&initiator_client);
-                return Ok(());
-            }
+        if rebuild.is_empty() {
+            return Ok(());
         }
 
-        self.setup_backend_chain(initiator_name, initiator_ip, initiator_docker.as_deref())
-            .await
+        self.setup_backend_chains(
+            initiator_name,
+            initiator_ip,
+            initiator_docker.as_deref(),
+            &rebuild,
+        )
+        .await
     }
 
-    pub(crate) async fn setup_backend_chain(
+    pub(crate) async fn setup_backend_chains(
         &self,
         initiator_name: &str,
         initiator_ip: IpAddr,
         initiator_docker: Option<&str>,
+        rebuild: &HashSet<String>,
     ) -> Result<(), Error> {
-        let mut dep_chain = self
-            .build_dep_chain(initiator_name, initiator_ip, initiator_docker)
+        let chains = self
+            .build_backend_dep_chains(initiator_name, initiator_ip, initiator_docker)
             .await?;
 
-        if let Some(first) = dep_chain.first_mut() {
+        let mut edges: Vec<RegisteredEdge> = Vec::new();
+        for mut chain in chains {
+            let Some(first) = chain.first_mut() else {
+                continue;
+            };
+            if !rebuild.contains(first.server_name()) {
+                continue;
+            }
             first.is_backend_entry = true;
+            edges.extend(chain);
         }
 
-        self.net_chain_setup(dep_chain).await?;
+        if edges.is_empty() {
+            return Ok(());
+        }
+
+        self.net_chain_setup(edges).await?;
         Ok(())
     }
 

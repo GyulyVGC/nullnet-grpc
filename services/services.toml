@@ -1,14 +1,13 @@
 [[services]]
 name = "color.com"
 timeout = 0
-dependencies = ["fs.color.com"]
+proxy_dependencies = ["fs.color.com"]
 max_networks = 2
 
 #[[services]]
 #name = "dumb.color.com"
-#dependencies = ["fs.color.com"]
+#proxy_dependencies = ["fs.color.com"]
 
 [[services]]
 name = "fs.color.com"
 timeout = 30
-dependencies = []

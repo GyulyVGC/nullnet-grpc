@@ -1,7 +1,7 @@
 [[services]]
 name = "A"
-dependencies = ["B"]
+proxy_dependencies = ["B"]
 
 [[services]]
 name = "D"
-dependencies = ["C"]
+proxy_dependencies = ["C"]

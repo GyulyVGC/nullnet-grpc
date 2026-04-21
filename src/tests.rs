@@ -229,7 +229,7 @@ async fn dep_changed_add_E_to_A() {
     assert_graphviz(&guard, DEP_CHANGED, "after_add_E_to_A.dot");
 
     assert_eq!(
-        guard["A"].dependencies(),
+        guard["A"].proxy_deps(),
         vec!["B".to_string(), "C".to_string(), "E".to_string()]
     );
     assert!(guard.contains_key("E"));
@@ -248,7 +248,7 @@ async fn dep_changed_drop_C_from_A() {
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_C_from_A.dot");
 
     assert!(guard.contains_key("A"));
-    assert_eq!(guard["A"].dependencies(), vec!["B".to_string()]);
+    assert_eq!(guard["A"].proxy_deps(), vec!["B".to_string()]);
     assert!(guard.contains_key("C"));
 }
 
@@ -263,7 +263,7 @@ async fn dep_changed_drop_all_from_D() {
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_all_from_D.dot");
 
-    assert!(guard["D"].dependencies().is_empty());
+    assert!(guard["D"].proxy_deps().is_empty());
     assert!(guard.contains_key("C"));
 }
 
@@ -279,7 +279,7 @@ async fn dep_changed_swap_C_for_E() {
     assert_graphviz(&guard, DEP_CHANGED, "after_swap_C_for_E.dot");
 
     assert_eq!(
-        guard["A"].dependencies(),
+        guard["A"].proxy_deps(),
         vec!["B".to_string(), "E".to_string()]
     );
     assert!(guard.contains_key("E"));

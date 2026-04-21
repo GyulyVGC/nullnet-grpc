@@ -66,4 +66,8 @@ impl RegisteredEdge {
             is_backend_entry: false,
         }
     }
+
+    pub(crate) fn server_name(&self) -> &str {
+        self.server.1.name()
+    }
 }

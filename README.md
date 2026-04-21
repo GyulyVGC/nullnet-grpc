@@ -47,12 +47,19 @@ TIMEOUT=0
 [[services]]
 name = "color.com"
 timeout = 0
-dependencies = ["fs.color.com"]
+proxy_dependencies = ["fs.color.com"]
+backend_dependencies = [
+  ["a.color.com", "b.color.com"],
+  ["c.color.com"],
+]
 max_networks = 3
 
 [[services]]
 ...
 ```
+
+- `proxy_dependencies` is a linear dep chain walked when the service is reached via a `Proxy` RPC from nullnet-proxy
+- `backend_dependencies` is a list of parallel linear chains walked when the service is reached via a `BackendTrigger` RPC from nullnet-client; fan-out = outer length
 
 - run the project as daemon with:
 ```

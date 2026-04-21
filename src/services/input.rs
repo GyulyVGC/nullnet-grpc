@@ -88,28 +88,44 @@ impl ServicesToml {
     }
 
     pub(crate) fn services_map(self) -> HashMap<String, ServiceInfo> {
-        let mut ret_val: HashMap<String, ServiceInfo> = HashMap::new();
+        // Proxy: last-write-wins per dep (a name referenced from multiple
+        // services has its tail overwritten by the last processor).
+        // Backend: each inner chain's tail is appended so a dep shared across
+        // chains inherits all their sub-tails as separate fan-out entries.
+        let mut proxy_accum: HashMap<String, Vec<String>> = HashMap::new();
+        let mut backend_accum: HashMap<String, Vec<Vec<String>>> = HashMap::new();
 
-        // first insert proxy-unreachable services
         for s in &self.services {
-            for d in &s.dependencies {
-                // as dependencies of d, take dependencies of s after d in the list
-                let d_deps = s
-                    .dependencies
-                    .iter()
-                    .skip_while(|dep| *dep != d)
-                    .skip(1)
-                    .cloned()
-                    .collect();
-                ret_val.insert(d.clone(), ServiceInfo::new(d_deps, None, None));
+            for d in &s.proxy_dependencies {
+                proxy_accum.insert(d.clone(), tail_after(&s.proxy_dependencies, d));
+            }
+            for chain in &s.backend_dependencies {
+                for d in chain {
+                    let tail = tail_after(chain, d);
+                    let slot = backend_accum.entry(d.clone()).or_default();
+                    if !tail.is_empty() {
+                        slot.push(tail);
+                    }
+                }
             }
         }
 
+        let mut ret_val: HashMap<String, ServiceInfo> = HashMap::new();
+        for (name, proxy) in proxy_accum {
+            let backend = backend_accum.remove(&name).unwrap_or_default();
+            ret_val.insert(name, ServiceInfo::new(proxy, backend, None, None));
+        }
+        for (name, backend) in backend_accum {
+            ret_val.insert(name, ServiceInfo::new(Vec::new(), backend, None, None));
+        }
+
+        // Explicit declarations override any implicit entries for the same name.
         for s in self.services {
             ret_val.insert(
                 s.name,
                 ServiceInfo::new(
-                    s.dependencies,
+                    s.proxy_dependencies,
+                    s.backend_dependencies,
                     Some(s.timeout.unwrap_or(*TIMEOUT)),
                     s.max_networks,
                 ),
@@ -118,6 +134,15 @@ impl ServicesToml {
 
         ret_val
     }
+}
+
+/// Return the elements of `slice` that come after the first occurrence of `elem`.
+fn tail_after(slice: &[String], elem: &str) -> Vec<String> {
+    slice
+        .iter()
+        .position(|d| d == elem)
+        .map(|i| slice[i + 1..].to_vec())
+        .unwrap_or_default()
 }
 
 pub(crate) async fn apply_config_update(
@@ -132,12 +157,19 @@ pub(crate) async fn apply_config_update(
 #[derive(Deserialize)]
 struct ServiceToml {
     name: String,
-    /// Per-service proxy client timeout in seconds.
-    /// If omitted, defaults to the global `TIMEOUT` env var (or 60s).
-    /// A value of 0 disables the timeout (proxy clients never expire).
+    /// Per-service entry timeout in seconds, applied to both proxy clients and
+    /// backend-triggered chain entries. If omitted, defaults to the global
+    /// `TIMEOUT` env var (or 60s). A value of 0 disables the timeout.
     timeout: Option<u64>,
-    dependencies: Vec<String>,
+    /// Linear dep chain walked on proxy-triggered setup.
+    #[serde(default)]
+    proxy_dependencies: Vec<String>,
+    /// Parallel dep chains walked on backend-triggered setup.
+    /// Each inner array is one linear chain; fan-out = outer length.
+    #[serde(default)]
+    backend_dependencies: Vec<Vec<String>>,
     /// Maximum number of networks that can be created for this service.
+    /// Applies to proxy chains only (backend chains are unbounded).
     /// When the limit is reached, new proxy clients reuse an existing network
     /// on the same proxy node instead of creating a new one.
     max_networks: Option<u32>,

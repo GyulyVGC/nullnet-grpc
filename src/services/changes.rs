@@ -77,7 +77,9 @@ pub(crate) fn detect_config_changes(
     // services with changed deps, reachability, or timeout
     for (name, loaded_info) in loaded {
         if let Some(old_info) = current.get(name) {
-            if loaded_info.dependencies() != old_info.dependencies() {
+            if loaded_info.proxy_deps() != old_info.proxy_deps()
+                || loaded_info.backend_deps() != old_info.backend_deps()
+            {
                 changes.push(ServiceChange::DepsChanged { name: name.clone() });
             } else if loaded_info.timeout().is_some() != old_info.timeout().is_some() {
                 // reachability toggled (Some <-> None)
@@ -188,14 +190,13 @@ async fn teardown_invalidated_service(
     let services_to_cleanup: Vec<String> = services
         .iter()
         .filter_map(|(service_name, si)| {
-            let ServiceInfo::Registered(reg) = si else {
+            if invalidated_service == service_name {
+                return Some(service_name.clone());
+            }
+            let ServiceInfo::Registered(_) = si else {
                 return None;
             };
-            if invalidated_service == service_name
-                || reg
-                    .dependencies()
-                    .contains(&invalidated_service.to_string())
-            {
+            if si.deps_contain(invalidated_service) {
                 Some(service_name.clone())
             } else {
                 None
@@ -208,12 +209,13 @@ async fn teardown_invalidated_service(
     }
 
     if is_failed && let Some(si @ ServiceInfo::Registered(_)) = services.get(invalidated_service) {
-        let deps = si.dependencies();
-        let proxy = si.timeout();
+        let proxy_deps = si.proxy_deps().to_vec();
+        let backend_deps = si.backend_deps().to_vec();
+        let timeout = si.timeout();
         let max_nets = si.max_networks();
         services.insert(
             invalidated_service.to_string(),
-            ServiceInfo::new(deps, proxy, max_nets),
+            ServiceInfo::new(proxy_deps, backend_deps, timeout, max_nets),
         );
     }
 }
@@ -258,6 +260,7 @@ async fn teardown_chain(
             replica_docker.as_deref(),
             services,
             orchestrator,
+            DepRole::Proxy,
         )
         .await;
     }
@@ -295,9 +298,35 @@ async fn teardown_chain(
 }
 
 /// Walk the dependency chain starting from a specific service replica (read-only)
-/// and collect the `(client, dep_service_name)` edges.
-/// Handles arbitrary chain lengths (A→B→C→…).
+/// and collect the `(client, dep_service_name)` edges. The `role` selects which
+/// dep list to traverse: `Proxy` walks `proxy_deps` recursively (linear chain,
+/// possibly with ghost edges from ancestor levels); `Backend` walks each inner
+/// chain in `backend_deps` as its own linear chain, so fan-out at the root
+/// emits one chain per inner array.
 pub(crate) fn collect_dep_chain_edges(
+    service_name: &str,
+    replica_ip: IpAddr,
+    replica_docker: Option<&str>,
+    services: &HashMap<String, ServiceInfo>,
+    role: DepRole,
+) -> Vec<(Client, String)> {
+    match role {
+        DepRole::Proxy => {
+            collect_proxy_dep_chain_edges(service_name, replica_ip, replica_docker, services)
+        }
+        DepRole::Backend => {
+            collect_backend_dep_chain_edges(service_name, replica_ip, replica_docker, services)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DepRole {
+    Proxy,
+    Backend,
+}
+
+fn collect_proxy_dep_chain_edges(
     service_name: &str,
     replica_ip: IpAddr,
     replica_docker: Option<&str>,
@@ -311,25 +340,22 @@ pub(crate) fn collect_dep_chain_edges(
     loop {
         let deps = services
             .get(&current_name)
-            .map(ServiceInfo::dependencies)
+            .map(ServiceInfo::proxy_deps)
             .unwrap_or_default();
-
         if deps.is_empty() {
             break;
         }
 
-        let client = Client::new_service(current_name.clone(), current_ip, current_docker.clone());
-
-        let mut next = None;
-        for dep_name in &deps {
-            let hop = if let Some(ServiceInfo::Registered(dep_reg)) = services.get(dep_name) {
-                dep_reg.client_replica(&client)
-            } else {
-                None
-            };
-
-            edges.push((client.clone(), dep_name.clone()));
-
+        let mut next: Option<(String, IpAddr, Option<String>)> = None;
+        for dep_name in deps {
+            let hop = emit_edge_and_probe_hop(
+                &mut edges,
+                &current_name,
+                current_ip,
+                current_docker.as_deref(),
+                dep_name,
+                services,
+            );
             if let Some((ip, docker)) = hop {
                 next = Some((dep_name.clone(), ip, docker));
             }
@@ -348,6 +374,66 @@ pub(crate) fn collect_dep_chain_edges(
     edges
 }
 
+fn collect_backend_dep_chain_edges(
+    service_name: &str,
+    replica_ip: IpAddr,
+    replica_docker: Option<&str>,
+    services: &HashMap<String, ServiceInfo>,
+) -> Vec<(Client, String)> {
+    let mut edges = Vec::new();
+    let chains = services
+        .get(service_name)
+        .map(ServiceInfo::backend_deps)
+        .unwrap_or_default();
+    for chain in chains {
+        let mut current_name = service_name.to_string();
+        let mut current_ip = replica_ip;
+        let mut current_docker: Option<String> = replica_docker.map(String::from);
+        for dep_name in chain {
+            let hop = emit_edge_and_probe_hop(
+                &mut edges,
+                &current_name,
+                current_ip,
+                current_docker.as_deref(),
+                dep_name,
+                services,
+            );
+            match hop {
+                Some((ip, docker)) => {
+                    current_name.clone_from(dep_name);
+                    current_ip = ip;
+                    current_docker = docker;
+                }
+                None => break,
+            }
+        }
+    }
+    edges
+}
+
+/// Push a `(current → dep)` edge onto `edges` and return the dep replica's
+/// `(ip, docker)` if a client for `current` is already set up there.
+fn emit_edge_and_probe_hop(
+    edges: &mut Vec<(Client, String)>,
+    current_name: &str,
+    current_ip: IpAddr,
+    current_docker: Option<&str>,
+    dep_name: &str,
+    services: &HashMap<String, ServiceInfo>,
+) -> Option<(IpAddr, Option<String>)> {
+    let client = Client::new_service(
+        current_name.to_string(),
+        current_ip,
+        current_docker.map(String::from),
+    );
+    let hop = match services.get(dep_name) {
+        Some(ServiceInfo::Registered(dep_reg)) => dep_reg.client_replica(&client),
+        _ => None,
+    };
+    edges.push((client, dep_name.to_string()));
+    hop
+}
+
 /// Walk the dependency chain starting from a specific service replica and
 /// decrement `active_chains` at each level. If an edge reaches 0, its VXLAN
 /// is torn down. Handles arbitrary chain lengths (A→B→C→…).
@@ -357,8 +443,9 @@ async fn teardown_dep_chain(
     replica_docker: Option<&str>,
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
+    role: DepRole,
 ) {
-    let edges = collect_dep_chain_edges(service_name, replica_ip, replica_docker, services);
+    let edges = collect_dep_chain_edges(service_name, replica_ip, replica_docker, services, role);
     for (client, dep_name) in edges {
         if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
             dep_reg.decrement_chain(&client, orchestrator).await;
@@ -517,6 +604,7 @@ pub(crate) async fn apply_changes(
                     initiator_docker.as_deref(),
                     services,
                     orchestrator,
+                    DepRole::Backend,
                 )
                 .await;
             }
