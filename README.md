@@ -89,10 +89,11 @@ CONTROL_SERVICE_PORT=50051
 
 ### nullnet-client
 
-- set environment variables (set `CONTROL_SERVICE_ADDR` to the IP of nullnet-grpc-server)
+- set environment variables (set `CONTROL_SERVICE_ADDR` to the IP of nullnet-grpc-server, `ETH_NAME` to the ethernet interface to monitor)
 ```
 CONTROL_SERVICE_ADDR=192.168.1.100
 CONTROL_SERVICE_PORT=50051
+ETH_NAME=ens18
 ```
 
 - service configuration must be stored at `./services.toml` and declare services as follows:
@@ -107,6 +108,20 @@ docker_container = "stack-name_container-name" # should correspond to the label 
 [[services]]
 ...
 ```
+
+- trigger configuration must be stored at `./triggers.toml` and declare per-port triggers as follows:
+```
+# triggers = [] # use this if you don't want to declare any trigger
+
+[[triggers]]
+port = 8080
+service_name = "color.com"
+
+[[triggers]]
+...
+```
+
+  When eBPF observes an outgoing packet on `ETH_NAME` whose destination port matches one of the declared triggers, the client sends a `BackendTrigger` RPC to the server with the corresponding `service_name`.
 
 - run the project as daemon with:
 ```
