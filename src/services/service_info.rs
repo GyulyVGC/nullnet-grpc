@@ -98,13 +98,13 @@ impl ServiceInfo {
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 unreg.proxy_deps = loaded.proxy_deps().to_vec();
-                unreg.triggers = loaded.triggers().clone();
+                unreg.triggers.clone_from(loaded.triggers());
                 unreg.timeout = loaded_timeout;
                 unreg.max_networks = loaded_max_networks;
             }
             ServiceInfo::Registered(reg) => {
                 reg.proxy_deps = loaded.proxy_deps().to_vec();
-                reg.triggers = loaded.triggers().clone();
+                reg.triggers.clone_from(loaded.triggers());
                 reg.timeout = loaded_timeout;
                 reg.max_networks = loaded_max_networks;
             }
@@ -135,11 +135,7 @@ impl ServiceInfo {
     /// True iff `other` appears in any of this service's dep lists (proxy or backend).
     pub(crate) fn deps_contain(&self, other: &str) -> bool {
         self.proxy_deps().iter().any(|d| d == other)
-            || self
-                .triggers()
-                .values()
-                .flatten()
-                .any(|d| d == other)
+            || self.triggers().values().flatten().any(|d| d == other)
     }
 }
 

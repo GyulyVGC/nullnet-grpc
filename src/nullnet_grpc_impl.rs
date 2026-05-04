@@ -419,7 +419,11 @@ impl NullnetGrpcImpl {
                 .handle_err(location!())?;
             let initiator_ip = replica.ip();
             let initiator_docker = replica.docker_container().map(String::from);
-            let first_dep = reg.triggers().get(&port).and_then(|chain| chain.first()).cloned();
+            let first_dep = reg
+                .triggers()
+                .get(&port)
+                .and_then(|chain| chain.first())
+                .cloned();
 
             let initiator_client = Client::new_service(
                 initiator_name.to_string(),
