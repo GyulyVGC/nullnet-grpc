@@ -69,6 +69,11 @@ pub struct VxlanSetup {
     pub host_mapping: ::core::option::Option<HostMapping>,
     #[prost(string, optional, tag = "10")]
     pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
+    /// Set only on the backend-entry edge of a backend-triggered chain.
+    /// The receiving client installs DNAT(dnat_port -> overlay_ip) so the
+    /// initiator's traffic on that local port is steered into the new VXLAN.
+    #[prost(uint32, optional, tag = "11")]
+    pub dnat_port: ::core::option::Option<u32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanTeardown {
@@ -102,6 +107,21 @@ pub struct Service {
     #[prost(string, optional, tag = "3")]
     pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
 }
+/// Response to ServicesList: per-declared-service, the set of trigger ports
+/// the client should observe via eBPF. When traffic is observed on one of
+/// these ports, the client fires BackendTrigger(service_name, port).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ServicesListResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub service_triggers: ::prost::alloc::vec::Vec<ServiceTrigger>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ServiceTrigger {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(uint32, repeated, tag = "2")]
+    pub ports: ::prost::alloc::vec::Vec<u32>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HostMapping {
     #[prost(string, tag = "1")]
@@ -127,6 +147,10 @@ pub struct Upstream {
 pub struct BackendTriggerRequest {
     #[prost(string, tag = "1")]
     pub service_name: ::prost::alloc::string::String,
+    /// The trigger port observed by the client. Picks one chain among the
+    /// service's configured triggers (one chain per port).
+    #[prost(uint32, tag = "2")]
+    pub port: u32,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Empty {}
@@ -269,11 +293,15 @@ pub mod nullnet_grpc_client {
                 .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "NetworkType"));
             self.inner.unary(req, path, codec).await
         }
-        /// Services list
+        /// Services list — response carries the trigger ports the caller should
+        /// observe locally for the services it just declared as hosting.
         pub async fn services_list(
             &mut self,
             request: impl tonic::IntoRequest<super::Services>,
-        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::ServicesListResponse>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -380,11 +408,15 @@ pub mod nullnet_grpc_server {
             &self,
             request: tonic::Request<super::Empty>,
         ) -> std::result::Result<tonic::Response<super::NetType>, tonic::Status>;
-        /// Services list
+        /// Services list — response carries the trigger ports the caller should
+        /// observe locally for the services it just declared as hosting.
         async fn services_list(
             &self,
             request: tonic::Request<super::Services>,
-        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::ServicesListResponse>,
+            tonic::Status,
+        >;
         /// Server streaming response type for the ControlChannel method.
         type ControlChannelStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::NetMessage, tonic::Status>,
@@ -534,7 +566,7 @@ pub mod nullnet_grpc_server {
                     struct ServicesListSvc<T: NullnetGrpc>(pub Arc<T>);
                     impl<T: NullnetGrpc> tonic::server::UnaryService<super::Services>
                     for ServicesListSvc<T> {
-                        type Response = super::Empty;
+                        type Response = super::ServicesListResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,

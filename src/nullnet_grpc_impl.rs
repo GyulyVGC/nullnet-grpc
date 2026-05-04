@@ -3,7 +3,8 @@ use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::proto::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use crate::proto::nullnet_grpc::{
-    BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest, Services, Upstream,
+    BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest, ServiceTrigger,
+    Services, ServicesListResponse, Upstream,
 };
 use crate::services::changes::{
     DepRole, apply_changes, collect_dep_chain_edges, detect_services_list_changes,
@@ -189,7 +190,7 @@ impl NullnetGrpcImpl {
     async fn services_list_impl(
         &self,
         request: Request<Services>,
-    ) -> Result<Response<Empty>, Error> {
+    ) -> Result<Response<ServicesListResponse>, Error> {
         let sender_ip = request
             .remote_addr()
             .ok_or("Could not get remote address for services list request")
@@ -217,7 +218,29 @@ impl NullnetGrpcImpl {
 
         self.apply_services_list(sender_ip, &service_list).await?;
 
-        Ok(Response::new(Empty {}))
+        // Build the trigger config to send back: only the triggers attached
+        // to the services this caller declared as hosting.
+        let guard = self.services.read().await;
+        let service_triggers: Vec<ServiceTrigger> = service_list
+            .iter()
+            .map(|(name, _, _)| name)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter_map(|name| {
+                let triggers = guard.get(name)?.triggers();
+                if triggers.is_empty() {
+                    return None;
+                }
+                let mut ports: Vec<u32> = triggers.keys().map(|p| u32::from(*p)).collect();
+                ports.sort_unstable();
+                Some(ServiceTrigger {
+                    service_name: name.clone(),
+                    ports,
+                })
+            })
+            .collect();
+
+        Ok(Response::new(ServicesListResponse { service_triggers }))
     }
 
     pub(crate) async fn new_proxy_chain(
@@ -288,15 +311,15 @@ impl NullnetGrpcImpl {
             .collect::<Result<_, Error>>()
     }
 
-    /// Build one registered chain per inner array in the service's
-    /// `backend_dependencies`. Chains where any dep is unregistered are dropped
-    /// silently — a partially-registered fan-out still sets up the ready chains.
-    async fn build_backend_dep_chains(
+    /// Build the registered chain for the trigger at `port`. Returns `None`
+    /// if the trigger does not exist or any dep along the chain is unregistered.
+    async fn build_backend_dep_chain(
         &self,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
-    ) -> Result<Vec<Vec<RegisteredEdge>>, Error> {
+        port: u16,
+    ) -> Result<Option<Vec<RegisteredEdge>>, Error> {
         let guard = self.services.read().await;
         let service_info = guard
             .get(service_name)
@@ -305,20 +328,20 @@ impl NullnetGrpcImpl {
         let ServiceInfo::Registered(registered) = service_info else {
             Err("Service is not registered").handle_err(location!())?
         };
-        let raw_chains =
-            registered.backend_dependency_chains(service_name, service_ip, service_docker, &guard);
+        let Some(raw_chain) = registered.backend_dependency_chain(
+            service_name,
+            service_ip,
+            service_docker,
+            port,
+            &guard,
+        ) else {
+            return Ok(None);
+        };
         drop(guard);
 
-        let chains = raw_chains
-            .into_iter()
-            .filter_map(|chain| {
-                chain
-                    .into_iter()
-                    .map(Edge::into_registered)
-                    .collect::<Option<Vec<_>>>()
-            })
-            .collect();
-        Ok(chains)
+        let chain: Option<Vec<RegisteredEdge>> =
+            raw_chain.into_iter().map(Edge::into_registered).collect();
+        Ok(chain)
     }
 
     pub(crate) async fn setup_proxy_chain(
@@ -358,8 +381,9 @@ impl NullnetGrpcImpl {
             .handle_err(location!())?
             .ip();
 
-        let initiator_name = request.into_inner().service_name;
-        self.handle_backend_trigger(&initiator_name, sender_ip)
+        let req = request.into_inner();
+        let port = u16::try_from(req.port).handle_err(location!())?;
+        self.handle_backend_trigger(&req.service_name, port, sender_ip)
             .await?;
         Ok(Response::new(Empty {}))
     }
@@ -367,14 +391,15 @@ impl NullnetGrpcImpl {
     pub(crate) async fn handle_backend_trigger(
         &self,
         initiator_name: &str,
+        port: u16,
         sender_ip: IpAddr,
     ) -> Result<(), Error> {
-        println!("Received backend trigger for '{initiator_name}' from {sender_ip}");
+        println!("Received backend trigger for '{initiator_name}' (port {port}) from {sender_ip}");
 
         // One write guard resolves the initiator replica, refreshes heartbeat
-        // on any first-dep edge already set up, and collects the first-dep
-        // names whose chains still need rebuilding.
-        let (initiator_ip, initiator_docker, rebuild) = {
+        // on the first-dep edge if already set up, and decides whether the
+        // chain for this trigger port needs rebuilding.
+        let (initiator_ip, initiator_docker, needs_rebuild) = {
             let mut guard = self.services.write().await;
             let si = guard
                 .get(initiator_name)
@@ -394,11 +419,7 @@ impl NullnetGrpcImpl {
                 .handle_err(location!())?;
             let initiator_ip = replica.ip();
             let initiator_docker = replica.docker_container().map(String::from);
-            let first_deps: Vec<String> = reg
-                .backend_deps()
-                .iter()
-                .filter_map(|chain| chain.first().cloned())
-                .collect();
+            let first_dep = reg.triggers().get(&port).and_then(|chain| chain.first()).cloned();
 
             let initiator_client = Client::new_service(
                 initiator_name.to_string(),
@@ -406,64 +427,56 @@ impl NullnetGrpcImpl {
                 initiator_docker.clone(),
             );
 
-            let mut rebuild: HashSet<String> = HashSet::new();
-            for first_dep in first_deps {
-                match guard.get_mut(&first_dep) {
+            let needs_rebuild = match first_dep {
+                None => false,
+                Some(name) => match guard.get_mut(&name) {
                     Some(ServiceInfo::Registered(dep_reg))
                         if dep_reg.is_client_setup(&initiator_client).is_some() =>
                     {
                         dep_reg.set_latest_now(&initiator_client);
+                        false
                     }
-                    _ => {
-                        rebuild.insert(first_dep);
-                    }
-                }
-            }
+                    _ => true,
+                },
+            };
 
-            (initiator_ip, initiator_docker, rebuild)
+            (initiator_ip, initiator_docker, needs_rebuild)
         };
 
-        if rebuild.is_empty() {
+        if !needs_rebuild {
             return Ok(());
         }
 
-        self.setup_backend_chains(
+        self.setup_backend_chain(
             initiator_name,
             initiator_ip,
             initiator_docker.as_deref(),
-            &rebuild,
+            port,
         )
         .await
     }
 
-    pub(crate) async fn setup_backend_chains(
+    pub(crate) async fn setup_backend_chain(
         &self,
         initiator_name: &str,
         initiator_ip: IpAddr,
         initiator_docker: Option<&str>,
-        rebuild: &HashSet<String>,
+        port: u16,
     ) -> Result<(), Error> {
-        let chains = self
-            .build_backend_dep_chains(initiator_name, initiator_ip, initiator_docker)
-            .await?;
+        let Some(mut chain) = self
+            .build_backend_dep_chain(initiator_name, initiator_ip, initiator_docker, port)
+            .await?
+        else {
+            return Ok(());
+        };
 
-        let mut edges: Vec<RegisteredEdge> = Vec::new();
-        for mut chain in chains {
-            let Some(first) = chain.first_mut() else {
-                continue;
-            };
-            if !rebuild.contains(first.server_name()) {
-                continue;
-            }
-            first.is_backend_entry = true;
-            edges.extend(chain);
-        }
-
-        if edges.is_empty() {
+        if let Some(first) = chain.first_mut() {
+            first.backend_entry_port = Some(u32::from(port));
+        } else {
             return Ok(());
         }
 
-        self.net_chain_setup(edges).await?;
+        self.net_chain_setup(chain).await?;
         Ok(())
     }
 
@@ -498,7 +511,7 @@ impl NullnetGrpcImpl {
             let (server_ethernet, server) = edge.server;
             let client_docker = edge.client_docker;
             let server_docker = edge.server_docker;
-            let is_backend_entry = edge.is_backend_entry;
+            let backend_entry_port = edge.backend_entry_port;
 
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
@@ -550,8 +563,14 @@ impl NullnetGrpcImpl {
                 let orch = orchestrator.clone();
                 let cd = client_docker.clone();
                 let sd = server_docker.clone();
-                let server_res =
-                    orch.send_net_setup(server_ethernet, None, net_id, client_ethernet, (cd, sd));
+                let server_res = orch.send_net_setup(
+                    server_ethernet,
+                    None,
+                    net_id,
+                    client_ethernet,
+                    (cd, sd),
+                    None,
+                );
                 let orch2 = orchestrator.clone();
                 let cd = client_docker.clone();
                 let sd = server_docker.clone();
@@ -561,6 +580,7 @@ impl NullnetGrpcImpl {
                     net_id,
                     server_ethernet,
                     (cd, sd),
+                    backend_entry_port,
                 );
 
                 let (server_ok, client_ok) = tokio::join!(server_res, client_res);
@@ -604,7 +624,7 @@ impl NullnetGrpcImpl {
                         time_ms,
                         client_docker.clone(),
                     )
-                    .with_backend_entry(is_backend_entry);
+                    .with_backend_entry(backend_entry_port.is_some());
                     reg.add_client_to_replica(
                         server_ethernet,
                         server_docker.as_deref(),
@@ -719,7 +739,10 @@ impl NullnetGrpc for NullnetGrpcImpl {
         }))
     }
 
-    async fn services_list(&self, req: Request<Services>) -> Result<Response<Empty>, Status> {
+    async fn services_list(
+        &self,
+        req: Request<Services>,
+    ) -> Result<Response<ServicesListResponse>, Status> {
         self.services_list_impl(req)
             .await
             .map_err(|err| Status::internal(err.to_str()))

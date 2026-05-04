@@ -15,6 +15,7 @@ impl Net {
         net_id: u32,
         remote: IpAddr,
         docker_containers: (Option<String>, Option<String>),
+        dnat_port: Option<u32>,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         match self {
             Net::Vlan => Self::vlan_setup(msg_id, dest, remote_server_name, net_id, remote),
@@ -25,6 +26,7 @@ impl Net {
                 net_id,
                 remote,
                 docker_containers,
+                dnat_port,
             ),
         }
     }
@@ -104,6 +106,7 @@ impl Net {
         vxlan_id: u32,
         remote: IpAddr,
         docker_containers: (Option<String>, Option<String>),
+        dnat_port: Option<u32>,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         // Map vxlan_id to a /29 block within 10.0.0.0/8.
         // Each ID gets 8 IPs (6 usable), with 4 IPs used for ns/br server/client.
@@ -160,6 +163,7 @@ impl Net {
                     remote_ip: remote.to_string(),
                     host_mapping,
                     docker_container,
+                    dnat_port,
                 })),
             },
         ))

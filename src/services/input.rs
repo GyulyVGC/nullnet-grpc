@@ -90,42 +90,34 @@ impl ServicesToml {
     pub(crate) fn services_map(self) -> HashMap<String, ServiceInfo> {
         // Proxy: last-write-wins per dep (a name referenced from multiple
         // services has its tail overwritten by the last processor).
-        // Backend: each inner chain's tail is appended so a dep shared across
-        // chains inherits all their sub-tails as separate fan-out entries.
         let mut proxy_accum: HashMap<String, Vec<String>> = HashMap::new();
-        let mut backend_accum: HashMap<String, Vec<Vec<String>>> = HashMap::new();
 
         for s in &self.services {
             for d in &s.proxy_dependencies {
                 proxy_accum.insert(d.clone(), tail_after(&s.proxy_dependencies, d));
             }
-            for chain in &s.backend_dependencies {
-                for d in chain {
-                    let tail = tail_after(chain, d);
-                    let slot = backend_accum.entry(d.clone()).or_default();
-                    if !tail.is_empty() {
-                        slot.push(tail);
-                    }
-                }
-            }
         }
 
         let mut ret_val: HashMap<String, ServiceInfo> = HashMap::new();
         for (name, proxy) in proxy_accum {
-            let backend = backend_accum.remove(&name).unwrap_or_default();
-            ret_val.insert(name, ServiceInfo::new(proxy, backend, None, None));
-        }
-        for (name, backend) in backend_accum {
-            ret_val.insert(name, ServiceInfo::new(Vec::new(), backend, None, None));
+            ret_val.insert(name, ServiceInfo::new(proxy, HashMap::new(), None, None));
         }
 
         // Explicit declarations override any implicit entries for the same name.
         for s in self.services {
+            let triggers = s
+                .triggers
+                .into_iter()
+                .map(|t| {
+                    let port = u16::try_from(t.port).expect("trigger port out of range");
+                    (port, t.chain)
+                })
+                .collect();
             ret_val.insert(
                 s.name,
                 ServiceInfo::new(
                     s.proxy_dependencies,
-                    s.backend_dependencies,
+                    triggers,
                     Some(s.timeout.unwrap_or(*TIMEOUT)),
                     s.max_networks,
                 ),
@@ -164,13 +156,20 @@ struct ServiceToml {
     /// Linear dep chain walked on proxy-triggered setup.
     #[serde(default)]
     proxy_dependencies: Vec<String>,
-    /// Parallel dep chains walked on backend-triggered setup.
-    /// Each inner array is one linear chain; fan-out = outer length.
+    /// Backend-triggered chains: each entry pairs a port observed by the
+    /// service host with the linear chain to bring up. One chain per port.
     #[serde(default)]
-    backend_dependencies: Vec<Vec<String>>,
+    triggers: Vec<TriggerToml>,
     /// Maximum number of networks that can be created for this service.
     /// Applies to proxy chains only (backend chains are unbounded).
     /// When the limit is reached, new proxy clients reuse an existing network
     /// on the same proxy node instead of creating a new one.
     max_networks: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct TriggerToml {
+    port: u32,
+    #[serde(default)]
+    chain: Vec<String>,
 }

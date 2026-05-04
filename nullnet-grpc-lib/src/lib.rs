@@ -2,7 +2,8 @@ mod proto;
 
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
 use crate::nullnet_grpc::{
-    BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest, Services, Upstream,
+    BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest, Services,
+    ServicesListResponse, Upstream,
 };
 pub use proto::*;
 use tokio::sync::mpsc;
@@ -83,20 +84,23 @@ impl NullnetGrpcInterface {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub async fn services_list(&self, message: Services) -> Result<(), String> {
+    pub async fn services_list(
+        &self,
+        message: Services,
+    ) -> Result<ServicesListResponse, String> {
         self.client
             .clone()
             .services_list(Request::new(message))
             .await
-            .map(|_| ())
+            .map(tonic::Response::into_inner)
             .map_err(|e| e.to_string())
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub async fn backend_trigger(&self, service_name: String) -> Result<(), String> {
+    pub async fn backend_trigger(&self, service_name: String, port: u32) -> Result<(), String> {
         self.client
             .clone()
-            .backend_trigger(Request::new(BackendTriggerRequest { service_name }))
+            .backend_trigger(Request::new(BackendTriggerRequest { service_name, port }))
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())

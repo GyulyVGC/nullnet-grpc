@@ -15,13 +15,13 @@ pub(crate) enum ServiceInfo {
 impl ServiceInfo {
     pub(crate) fn new(
         proxy_deps: Vec<String>,
-        backend_deps: Vec<Vec<String>>,
+        triggers: HashMap<u16, Vec<String>>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
     ) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
             proxy_deps,
-            backend_deps,
+            triggers,
             timeout,
             max_networks,
         ))
@@ -32,7 +32,7 @@ impl ServiceInfo {
             ServiceInfo::Unregistered(unreg) => {
                 *self = ServiceInfo::Registered(RegisteredServiceInfo {
                     proxy_deps: unreg.proxy_deps.clone(),
-                    backend_deps: unreg.backend_deps.clone(),
+                    triggers: unreg.triggers.clone(),
                     timeout: unreg.timeout,
                     max_networks: unreg.max_networks,
                     replicas: vec![Replica::new(ip, port, docker_container)],
@@ -60,7 +60,7 @@ impl ServiceInfo {
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
                     reg.proxy_deps.clone(),
-                    reg.backend_deps.clone(),
+                    reg.triggers.clone(),
                     reg.timeout,
                     reg.max_networks,
                 ));
@@ -77,7 +77,7 @@ impl ServiceInfo {
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
                     reg.proxy_deps.clone(),
-                    reg.backend_deps.clone(),
+                    reg.triggers.clone(),
                     reg.timeout,
                     reg.max_networks,
                 ));
@@ -98,13 +98,13 @@ impl ServiceInfo {
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 unreg.proxy_deps = loaded.proxy_deps().to_vec();
-                unreg.backend_deps = loaded.backend_deps().to_vec();
+                unreg.triggers = loaded.triggers().clone();
                 unreg.timeout = loaded_timeout;
                 unreg.max_networks = loaded_max_networks;
             }
             ServiceInfo::Registered(reg) => {
                 reg.proxy_deps = loaded.proxy_deps().to_vec();
-                reg.backend_deps = loaded.backend_deps().to_vec();
+                reg.triggers = loaded.triggers().clone();
                 reg.timeout = loaded_timeout;
                 reg.max_networks = loaded_max_networks;
             }
@@ -125,17 +125,21 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn backend_deps(&self) -> &[Vec<String>] {
+    pub(crate) fn triggers(&self) -> &HashMap<u16, Vec<String>> {
         match self {
-            ServiceInfo::Unregistered(unreg) => &unreg.backend_deps,
-            ServiceInfo::Registered(reg) => &reg.backend_deps,
+            ServiceInfo::Unregistered(unreg) => &unreg.triggers,
+            ServiceInfo::Registered(reg) => &reg.triggers,
         }
     }
 
     /// True iff `other` appears in any of this service's dep lists (proxy or backend).
     pub(crate) fn deps_contain(&self, other: &str) -> bool {
         self.proxy_deps().iter().any(|d| d == other)
-            || self.backend_deps().iter().flatten().any(|d| d == other)
+            || self
+                .triggers()
+                .values()
+                .flatten()
+                .any(|d| d == other)
     }
 }
 
@@ -143,9 +147,9 @@ impl ServiceInfo {
 pub(crate) struct UnregisteredServiceInfo {
     /// Linear dep chain walked on proxy-triggered setup.
     proxy_deps: Vec<String>,
-    /// Parallel dep chains walked on backend-triggered setup.
-    /// Each inner `Vec<String>` is one linear chain; fan-out = outer length.
-    backend_deps: Vec<Vec<String>>,
+    /// Backend-triggered chains keyed by the trigger port observed on the
+    /// initiator's host. One linear chain per port; no implicit fan-out.
+    triggers: HashMap<u16, Vec<String>>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
@@ -155,13 +159,13 @@ pub(crate) struct UnregisteredServiceInfo {
 impl UnregisteredServiceInfo {
     fn new(
         proxy_deps: Vec<String>,
-        backend_deps: Vec<Vec<String>>,
+        triggers: HashMap<u16, Vec<String>>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
     ) -> Self {
         Self {
             proxy_deps,
-            backend_deps,
+            triggers,
             timeout,
             max_networks,
         }
@@ -212,9 +216,9 @@ impl Replica {
 pub(crate) struct RegisteredServiceInfo {
     /// Linear dep chain walked on proxy-triggered setup.
     proxy_deps: Vec<String>,
-    /// Parallel dep chains walked on backend-triggered setup.
-    /// Each inner `Vec<String>` is one linear chain; fan-out = outer length.
-    backend_deps: Vec<Vec<String>>,
+    /// Backend-triggered chains keyed by the trigger port observed on the
+    /// initiator's host. One linear chain per port; no implicit fan-out.
+    triggers: HashMap<u16, Vec<String>>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
@@ -241,27 +245,24 @@ impl RegisteredServiceInfo {
         )
     }
 
-    /// Build one chain of edges per inner array in `backend_deps`.
-    /// Each chain starts at this service's replica; fan-out is explicit.
-    pub(crate) fn backend_dependency_chains(
+    /// Build the chain of edges for the trigger at `port`, if one exists.
+    /// Each chain starts at this service's replica.
+    pub(crate) fn backend_dependency_chain(
         &self,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
+        port: u16,
         services: &HashMap<String, ServiceInfo>,
-    ) -> Vec<Vec<Edge>> {
-        self.backend_deps
-            .iter()
-            .map(|chain| {
-                build_linear_chain(
-                    chain,
-                    service_name.to_string(),
-                    service_ip,
-                    service_docker,
-                    services,
-                )
-            })
-            .collect()
+    ) -> Option<Vec<Edge>> {
+        let chain = self.triggers.get(&port)?;
+        Some(build_linear_chain(
+            chain,
+            service_name.to_string(),
+            service_ip,
+            service_docker,
+            services,
+        ))
     }
 
     /// Invariant: a given `Client` exists on exactly one replica (sticky sessions).
@@ -440,8 +441,8 @@ impl RegisteredServiceInfo {
         &self.replicas
     }
 
-    pub(crate) fn backend_deps(&self) -> &[Vec<String>] {
-        &self.backend_deps
+    pub(crate) fn triggers(&self) -> &HashMap<u16, Vec<String>> {
+        &self.triggers
     }
 
     pub(crate) fn expired_proxy_clients(&self, timeout: Duration) -> Vec<Client> {

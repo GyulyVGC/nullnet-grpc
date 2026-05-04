@@ -78,7 +78,7 @@ pub(crate) fn detect_config_changes(
     for (name, loaded_info) in loaded {
         if let Some(old_info) = current.get(name) {
             if loaded_info.proxy_deps() != old_info.proxy_deps()
-                || loaded_info.backend_deps() != old_info.backend_deps()
+                || loaded_info.triggers() != old_info.triggers()
             {
                 changes.push(ServiceChange::DepsChanged { name: name.clone() });
             } else if loaded_info.timeout().is_some() != old_info.timeout().is_some() {
@@ -210,12 +210,12 @@ async fn teardown_invalidated_service(
 
     if is_failed && let Some(si @ ServiceInfo::Registered(_)) = services.get(invalidated_service) {
         let proxy_deps = si.proxy_deps().to_vec();
-        let backend_deps = si.backend_deps().to_vec();
+        let triggers = si.triggers().clone();
         let timeout = si.timeout();
         let max_nets = si.max_networks();
         services.insert(
             invalidated_service.to_string(),
-            ServiceInfo::new(proxy_deps, backend_deps, timeout, max_nets),
+            ServiceInfo::new(proxy_deps, triggers, timeout, max_nets),
         );
     }
 }
@@ -381,11 +381,10 @@ fn collect_backend_dep_chain_edges(
     services: &HashMap<String, ServiceInfo>,
 ) -> Vec<(Client, String)> {
     let mut edges = Vec::new();
-    let chains = services
-        .get(service_name)
-        .map(ServiceInfo::backend_deps)
-        .unwrap_or_default();
-    for chain in chains {
+    let Some(triggers) = services.get(service_name).map(ServiceInfo::triggers) else {
+        return edges;
+    };
+    for chain in triggers.values() {
         let mut current_name = service_name.to_string();
         let mut current_ip = replica_ip;
         let mut current_docker: Option<String> = replica_docker.map(String::from);

@@ -85,6 +85,7 @@ impl Orchestrator {
         net_id: u32,
         remote: IpAddr,
         docker_containers: (Option<String>, Option<String>),
+        dnat_port: Option<u32>,
     ) -> Option<Ipv4Addr> {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
@@ -99,6 +100,7 @@ impl Orchestrator {
                 net_id,
                 remote,
                 docker_containers,
+                dnat_port,
             )?;
 
             if outbound.send(Ok(message)).await.is_err() {
