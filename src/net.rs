@@ -7,6 +7,7 @@ use nullnet_liberror::{ErrorHandler, Location, location};
 use std::net::{IpAddr, Ipv4Addr};
 
 impl Net {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn setup(
         self,
         msg_id: String,
