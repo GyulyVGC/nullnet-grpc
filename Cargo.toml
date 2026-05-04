@@ -9,7 +9,7 @@ tonic = { version = "0.14.5", features = ["_tls-any", "tls-native-roots"] }
 prost = "0.14.3"
 tonic-prost = "0.14.5"
 nullnet-liberror = { git = "https://github.com/NullNet-ai/libguard.git", branch = "nullnet-liberror-print" }
-tokio = { version = "1.51.1", features = ["rt-multi-thread", "fs"] }
+tokio = { version = "1.52.2", features = ["rt-multi-thread", "fs"] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2"
