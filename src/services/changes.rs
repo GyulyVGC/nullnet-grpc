@@ -8,8 +8,10 @@ use std::time::Duration;
 pub(crate) enum ServiceChange {
     /// Service removed from config entirely.
     Removed { name: String },
-    /// Service dependencies changed in config.
-    DepsChanged { name: String },
+    /// Service's `proxy_dependencies` changed in config.
+    ProxyDepsChanged { name: String },
+    /// Service's `triggers` changed in config.
+    TriggersChanged { name: String },
     /// Service entry-point timeout toggled in config (Some ↔ None).
     ReachabilityChanged { name: String },
     /// All replicas on a specific IP were removed (node disconnected).
@@ -70,11 +72,13 @@ pub(crate) fn detect_config_changes(
     // services with changed deps, reachability, or timeout
     for (name, loaded_info) in loaded {
         if let Some(old_info) = current.get(name) {
-            if loaded_info.proxy_deps() != old_info.proxy_deps()
-                || loaded_info.triggers() != old_info.triggers()
-            {
-                changes.push(ServiceChange::DepsChanged { name: name.clone() });
-            } else if loaded_info.timeout().is_some() != old_info.timeout().is_some() {
+            if loaded_info.proxy_deps() != old_info.proxy_deps() {
+                changes.push(ServiceChange::ProxyDepsChanged { name: name.clone() });
+            }
+            if loaded_info.triggers() != old_info.triggers() {
+                changes.push(ServiceChange::TriggersChanged { name: name.clone() });
+            }
+            if loaded_info.timeout().is_some() != old_info.timeout().is_some() {
                 // reachability toggled (Some <-> None)
                 changes.push(ServiceChange::ReachabilityChanged { name: name.clone() });
             } else if let (Some(new_timeout), Some(old_timeout)) =
@@ -199,6 +203,15 @@ async fn teardown_invalidated_service(
 
     for name in services_to_cleanup {
         teardown_chain(&name, services, orchestrator, ProxyFilter::All).await;
+        // For the invalidated service itself, tear down all of its backend
+        // chains; for dependents, only chains that route through the
+        // invalidated service.
+        let only_through = if name == invalidated_service {
+            None
+        } else {
+            Some(invalidated_service)
+        };
+        teardown_all_backend_chains_for(&name, only_through, services, orchestrator).await;
     }
 
     if is_failed && let Some(si @ ServiceInfo::Registered(_)) = services.get(invalidated_service) {
@@ -341,6 +354,107 @@ pub(crate) fn collect_dep_chain_edges(
     edges
 }
 
+/// Walk the backend trigger chains starting from a specific initiator replica
+/// and collect the `(client, dep_service_name)` edges. One chain per trigger
+/// port; each is walked as a linear chain. If `only_through` is `Some(dep)`,
+/// chains that don't reference `dep` are skipped — useful for dep-side teardown
+/// where only chains that go through the affected dep should come down.
+fn collect_backend_chain_edges(
+    initiator_name: &str,
+    initiator_ip: IpAddr,
+    initiator_docker: Option<&str>,
+    only_through: Option<&str>,
+    services: &HashMap<String, ServiceInfo>,
+) -> Vec<(Client, String)> {
+    let mut edges = Vec::new();
+    let Some(triggers) = services.get(initiator_name).map(ServiceInfo::triggers) else {
+        return edges;
+    };
+    for chain in triggers.values() {
+        if let Some(dep) = only_through
+            && !chain.iter().any(|d| d == dep)
+        {
+            continue;
+        }
+        let mut current_name = initiator_name.to_string();
+        let mut current_ip = initiator_ip;
+        let mut current_docker: Option<String> = initiator_docker.map(String::from);
+        for dep_name in chain {
+            let hop = emit_edge_and_probe_hop(
+                &mut edges,
+                &current_name,
+                current_ip,
+                current_docker.as_deref(),
+                dep_name,
+                services,
+            );
+            match hop {
+                Some((ip, docker)) => {
+                    current_name.clone_from(dep_name);
+                    current_ip = ip;
+                    current_docker = docker;
+                }
+                None => break,
+            }
+        }
+    }
+    edges
+}
+
+/// Backend twin of `teardown_dep_chain`: walks the initiator's trigger chains
+/// and decrements each edge. `only_through` filters to chains containing the
+/// given dep name; `None` walks every chain.
+async fn teardown_backend_chain(
+    initiator_name: &str,
+    initiator_ip: IpAddr,
+    initiator_docker: Option<&str>,
+    only_through: Option<&str>,
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    let edges = collect_backend_chain_edges(
+        initiator_name,
+        initiator_ip,
+        initiator_docker,
+        only_through,
+        services,
+    );
+    for (client, dep_name) in edges {
+        if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
+            dep_reg.decrement_chain(&client, orchestrator).await;
+        }
+    }
+}
+
+/// Tear down every backend chain initiated by any replica of `initiator_name`.
+/// `only_through` filters to chains containing the given dep name.
+async fn teardown_all_backend_chains_for(
+    initiator_name: &str,
+    only_through: Option<&str>,
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    let replicas: Vec<(IpAddr, Option<String>)> = match services.get(initiator_name) {
+        Some(ServiceInfo::Registered(reg)) => reg
+            .replicas()
+            .iter()
+            .map(|r| (r.ip(), r.docker_container().map(String::from)))
+            .collect(),
+        _ => vec![],
+    };
+    for (ip, docker) in replicas {
+        teardown_backend_chain(
+            initiator_name,
+            ip,
+            docker.as_deref(),
+            only_through,
+            services,
+            orchestrator,
+        )
+        .await;
+    }
+}
+
 /// Push a `(current → dep)` edge onto `edges` and return the dep replica's
 /// `(ip, docker)` if a client for `current` is already set up there.
 fn emit_edge_and_probe_hop(
@@ -417,6 +531,18 @@ async fn teardown_partial_replicas(
                 ProxyFilter::OnReplica(src_ip, src_docker),
             )
             .await;
+            // Backend twin: tear down chains initiated by this upstream replica
+            // that route through the affected dep, so deeper edges keyed by the
+            // gone replica don't leak.
+            teardown_backend_chain(
+                client.name(),
+                src_ip,
+                src_docker,
+                Some(name),
+                services,
+                orchestrator,
+            )
+            .await;
         }
     }
 
@@ -438,11 +564,15 @@ pub(crate) async fn apply_changes(
                 teardown_invalidated_service(&name, true, services, orchestrator).await;
                 services.remove(&name);
             }
-            ServiceChange::DepsChanged { name } => {
+            ServiceChange::ProxyDepsChanged { name } => {
                 teardown_invalidated_service(&name, false, services, orchestrator).await;
+            }
+            ServiceChange::TriggersChanged { name } => {
+                teardown_all_backend_chains_for(&name, None, services, orchestrator).await;
             }
             ServiceChange::ReachabilityChanged { name } => {
                 teardown_chain(&name, services, orchestrator, ProxyFilter::All).await;
+                teardown_all_backend_chains_for(&name, None, services, orchestrator).await;
             }
             ServiceChange::ReplicasRemoved { name, ip } => {
                 let is_last = if let Some(ServiceInfo::Registered(reg)) = services.get(&name) {
@@ -455,6 +585,28 @@ pub(crate) async fn apply_changes(
                     // Last replica gone — config-based cascade to transitive dependents
                     teardown_invalidated_service(&name, true, services, orchestrator).await;
                 } else {
+                    // Backend chains initiated by replicas of `name` at `ip`
+                    let dockers: Vec<Option<String>> =
+                        if let Some(ServiceInfo::Registered(reg)) = services.get(&name) {
+                            reg.replicas()
+                                .iter()
+                                .filter(|r| r.ip() == ip)
+                                .map(|r| r.docker_container().map(String::from))
+                                .collect()
+                        } else {
+                            vec![]
+                        };
+                    for docker in dockers {
+                        teardown_backend_chain(
+                            &name,
+                            ip,
+                            docker.as_deref(),
+                            None,
+                            services,
+                            orchestrator,
+                        )
+                        .await;
+                    }
                     teardown_partial_replicas(&name, ProxyFilter::OnIp(ip), services, orchestrator)
                         .await;
                     if let Some(si) = services.get_mut(&name) {
@@ -476,6 +628,16 @@ pub(crate) async fn apply_changes(
                 if is_last {
                     teardown_invalidated_service(&name, true, services, orchestrator).await;
                 } else {
+                    // Backend chains initiated by this specific replica
+                    teardown_backend_chain(
+                        &name,
+                        ip,
+                        docker_container.as_deref(),
+                        None,
+                        services,
+                        orchestrator,
+                    )
+                    .await;
                     teardown_partial_replicas(
                         &name,
                         ProxyFilter::OnReplica(ip, docker_container.as_deref()),
