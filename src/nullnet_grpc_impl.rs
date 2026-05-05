@@ -424,6 +424,10 @@ impl NullnetGrpcImpl {
                 .get(&port)
                 .and_then(|chain| chain.first())
                 .cloned();
+            println!(
+                "[trigger] triggers map for '{initiator_name}': {:?}; first_dep for port {port}: {first_dep:?}",
+                reg.triggers()
+            );
 
             let initiator_client = Client::new_service(
                 initiator_name.to_string(),
@@ -447,7 +451,9 @@ impl NullnetGrpcImpl {
             (initiator_ip, initiator_docker, needs_rebuild)
         };
 
+        println!("[trigger] needs_rebuild={needs_rebuild} for '{initiator_name}' port {port}");
         if !needs_rebuild {
+            println!("[trigger] returning early without rebuild");
             return Ok(());
         }
 
@@ -471,16 +477,21 @@ impl NullnetGrpcImpl {
             .build_backend_dep_chain(initiator_name, initiator_ip, initiator_docker, port)
             .await?
         else {
+            println!("[trigger] build_backend_dep_chain returned None for '{initiator_name}' port {port}");
             return Ok(());
         };
+        println!("[trigger] built dep chain with {} edge(s) for '{initiator_name}' port {port}", chain.len());
 
         if let Some(first) = chain.first_mut() {
             first.backend_entry_port = Some(u32::from(port));
         } else {
+            println!("[trigger] dep chain is empty for '{initiator_name}' port {port}");
             return Ok(());
         }
 
+        println!("[trigger] dispatching net_chain_setup for '{initiator_name}' port {port}");
         self.net_chain_setup(chain).await?;
+        println!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
         Ok(())
     }
 
