@@ -7,7 +7,7 @@ use crate::proto::nullnet_grpc::{
     Services, ServicesListResponse, Upstream,
 };
 use crate::services::changes::{
-    DepRole, apply_changes, collect_dep_chain_edges, detect_services_list_changes,
+    apply_changes, collect_dep_chain_edges, detect_services_list_changes,
 };
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
@@ -171,7 +171,6 @@ impl NullnetGrpcImpl {
                 replica_ip,
                 replica_docker.as_deref(),
                 &services_mut,
-                DepRole::Proxy,
             );
             for (dep_client, dep_name) in dep_edges {
                 if let Some(ServiceInfo::Registered(dep_reg)) = services_mut.get_mut(&dep_name) {
@@ -400,7 +399,7 @@ impl NullnetGrpcImpl {
         // on the first-dep edge if already set up, and decides whether the
         // chain for this trigger port needs rebuilding.
         let (initiator_ip, initiator_docker, needs_rebuild) = {
-            let mut guard = self.services.write().await;
+            let guard = self.services.write().await;
             let si = guard
                 .get(initiator_name)
                 .ok_or("Initiator service not found")
@@ -437,15 +436,11 @@ impl NullnetGrpcImpl {
 
             let needs_rebuild = match first_dep {
                 None => false,
-                Some(name) => match guard.get_mut(&name) {
+                Some(name) => !matches!(
+                    guard.get(&name),
                     Some(ServiceInfo::Registered(dep_reg))
-                        if dep_reg.is_client_setup(&initiator_client).is_some() =>
-                    {
-                        dep_reg.set_latest_now(&initiator_client);
-                        false
-                    }
-                    _ => true,
-                },
+                        if dep_reg.is_client_setup(&initiator_client).is_some()
+                ),
             };
 
             (initiator_ip, initiator_docker, needs_rebuild)
@@ -477,10 +472,15 @@ impl NullnetGrpcImpl {
             .build_backend_dep_chain(initiator_name, initiator_ip, initiator_docker, port)
             .await?
         else {
-            println!("[trigger] build_backend_dep_chain returned None for '{initiator_name}' port {port}");
+            println!(
+                "[trigger] build_backend_dep_chain returned None for '{initiator_name}' port {port}"
+            );
             return Ok(());
         };
-        println!("[trigger] built dep chain with {} edge(s) for '{initiator_name}' port {port}", chain.len());
+        println!(
+            "[trigger] built dep chain with {} edge(s) for '{initiator_name}' port {port}",
+            chain.len()
+        );
 
         if let Some(first) = chain.first_mut() {
             first.backend_entry_port = Some(u32::from(port));
@@ -638,8 +638,7 @@ impl NullnetGrpcImpl {
                         net_id,
                         time_ms,
                         client_docker.clone(),
-                    )
-                    .with_backend_entry(backend_entry_port.is_some());
+                    );
                     reg.add_client_to_replica(
                         server_ethernet,
                         server_docker.as_deref(),

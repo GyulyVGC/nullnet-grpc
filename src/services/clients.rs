@@ -93,10 +93,6 @@ pub(crate) struct ClientInfo {
     active_chains: usize,
     latest: Instant,
     docker_container: Option<String>,
-    /// True iff this entry is the first-dep edge of a backend-triggered chain.
-    /// Backend heartbeats refresh `latest` on this entry; its expiry drives the
-    /// chain teardown.
-    is_backend_entry: bool,
 }
 
 impl ClientInfo {
@@ -117,7 +113,6 @@ impl ClientInfo {
             active_chains: 0,
             latest: Instant::now(),
             docker_container,
-            is_backend_entry: false,
         }
     }
 
@@ -131,17 +126,7 @@ impl ClientInfo {
             active_chains: 0,
             latest: Instant::now(),
             docker_container: None,
-            is_backend_entry: false,
         }
-    }
-
-    pub(crate) fn with_backend_entry(mut self, is_backend_entry: bool) -> Self {
-        self.is_backend_entry = is_backend_entry;
-        self
-    }
-
-    pub(crate) fn is_backend_entry(&self) -> bool {
-        self.is_backend_entry
     }
 
     pub(crate) fn client_ip(&self) -> IpAddr {

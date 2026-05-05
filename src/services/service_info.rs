@@ -473,23 +473,6 @@ impl RegisteredServiceInfo {
             .min()
     }
 
-    /// Collect backend-entry clients on this service (i.e. first-dep-edge
-    /// entries of chains initiated by other services). Each item carries the
-    /// initiator client and the `latest` instant from its `ClientInfo`.
-    pub(crate) fn backend_entry_clients(&self) -> Vec<(Client, Instant)> {
-        self.replicas
-            .iter()
-            .flat_map(|replica| {
-                replica
-                    .clients
-                    .clients()
-                    .iter()
-                    .filter(|(_, ci)| ci.is_backend_entry())
-                    .map(|(c, ci)| (c.clone(), ci.latest()))
-            })
-            .collect()
-    }
-
     /// Return service-to-service client entries connected to replicas at the given IP.
     pub(crate) fn service_clients_on_ip(&self, ip: IpAddr) -> Vec<Client> {
         self.replicas

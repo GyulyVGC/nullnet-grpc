@@ -24,13 +24,6 @@ pub(crate) enum ServiceChange {
     ProxyDisconnected { ip: IpAddr },
     /// A proxy client's timeout expired; tear down its chains.
     ProxyClientTimedOut { name: String, client: Client },
-    /// A backend-triggered chain's entry marker expired; tear down the chain
-    /// starting at the initiator replica.
-    BackendChainTimedOut {
-        initiator_name: String,
-        initiator_ip: IpAddr,
-        initiator_docker: Option<String>,
-    },
 }
 
 enum ProxyFilter<'a> {
@@ -260,7 +253,6 @@ async fn teardown_chain(
             replica_docker.as_deref(),
             services,
             orchestrator,
-            DepRole::Proxy,
         )
         .await;
     }
@@ -297,36 +289,11 @@ async fn teardown_chain(
     }
 }
 
-/// Walk the dependency chain starting from a specific service replica (read-only)
-/// and collect the `(client, dep_service_name)` edges. The `role` selects which
-/// dep list to traverse: `Proxy` walks `proxy_deps` recursively (linear chain,
-/// possibly with ghost edges from ancestor levels); `Backend` walks each inner
-/// chain in `backend_deps` as its own linear chain, so fan-out at the root
-/// emits one chain per inner array.
+/// Walk the proxy dependency chain starting from a specific service replica
+/// (read-only) and collect the `(client, dep_service_name)` edges. Walks
+/// `proxy_deps` recursively (linear chain, possibly with ghost edges from
+/// ancestor levels).
 pub(crate) fn collect_dep_chain_edges(
-    service_name: &str,
-    replica_ip: IpAddr,
-    replica_docker: Option<&str>,
-    services: &HashMap<String, ServiceInfo>,
-    role: DepRole,
-) -> Vec<(Client, String)> {
-    match role {
-        DepRole::Proxy => {
-            collect_proxy_dep_chain_edges(service_name, replica_ip, replica_docker, services)
-        }
-        DepRole::Backend => {
-            collect_backend_dep_chain_edges(service_name, replica_ip, replica_docker, services)
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum DepRole {
-    Proxy,
-    Backend,
-}
-
-fn collect_proxy_dep_chain_edges(
     service_name: &str,
     replica_ip: IpAddr,
     replica_docker: Option<&str>,
@@ -374,42 +341,6 @@ fn collect_proxy_dep_chain_edges(
     edges
 }
 
-fn collect_backend_dep_chain_edges(
-    service_name: &str,
-    replica_ip: IpAddr,
-    replica_docker: Option<&str>,
-    services: &HashMap<String, ServiceInfo>,
-) -> Vec<(Client, String)> {
-    let mut edges = Vec::new();
-    let Some(triggers) = services.get(service_name).map(ServiceInfo::triggers) else {
-        return edges;
-    };
-    for chain in triggers.values() {
-        let mut current_name = service_name.to_string();
-        let mut current_ip = replica_ip;
-        let mut current_docker: Option<String> = replica_docker.map(String::from);
-        for dep_name in chain {
-            let hop = emit_edge_and_probe_hop(
-                &mut edges,
-                &current_name,
-                current_ip,
-                current_docker.as_deref(),
-                dep_name,
-                services,
-            );
-            match hop {
-                Some((ip, docker)) => {
-                    current_name.clone_from(dep_name);
-                    current_ip = ip;
-                    current_docker = docker;
-                }
-                None => break,
-            }
-        }
-    }
-    edges
-}
-
 /// Push a `(current → dep)` edge onto `edges` and return the dep replica's
 /// `(ip, docker)` if a client for `current` is already set up there.
 fn emit_edge_and_probe_hop(
@@ -442,9 +373,8 @@ async fn teardown_dep_chain(
     replica_docker: Option<&str>,
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
-    role: DepRole,
 ) {
-    let edges = collect_dep_chain_edges(service_name, replica_ip, replica_docker, services, role);
+    let edges = collect_dep_chain_edges(service_name, replica_ip, replica_docker, services);
     for (client, dep_name) in edges {
         if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
             dep_reg.decrement_chain(&client, orchestrator).await;
@@ -586,24 +516,6 @@ pub(crate) async fn apply_changes(
                     services,
                     orchestrator,
                     ProxyFilter::ByClient(&client),
-                )
-                .await;
-            }
-            ServiceChange::BackendChainTimedOut {
-                initiator_name,
-                initiator_ip,
-                initiator_docker,
-            } => {
-                println!(
-                    "Backend chain initiated by '{initiator_name}' at {initiator_ip} timed out"
-                );
-                teardown_dep_chain(
-                    &initiator_name,
-                    initiator_ip,
-                    initiator_docker.as_deref(),
-                    services,
-                    orchestrator,
-                    DepRole::Backend,
                 )
                 .await;
             }
