@@ -11,6 +11,3 @@ chain = ["ts.color.com"]
 [[services]]
 name = "fs.color.com"
 timeout = 30
-
-[[services]]
-name = "ts.color.com"
