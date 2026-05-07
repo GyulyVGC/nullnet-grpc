@@ -1,0 +1,14 @@
+digraph G {
+	bgcolor=grey10;
+	node [color=white, fontcolor=white];
+	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
+
+	"A" [label="A (0/1)"] [style=solid, color=green];
+
+	"B" [label="B (1/1)"] [style=dashed, color=green];
+	"D" -> "B" [label="VXLAN 102 [0ms]"];
+
+	"D" [label="D (1/1)"] [style=solid, color=green];
+
+	"E" [label="E (0/1)"] [style=solid, color=green];
+}
