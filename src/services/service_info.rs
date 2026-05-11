@@ -14,13 +14,15 @@ pub(crate) enum ServiceInfo {
 
 impl ServiceInfo {
     pub(crate) fn new(
-        dependencies: Vec<String>,
-        is_proxy_reachable: Option<u64>,
+        proxy_deps: Vec<String>,
+        triggers: HashMap<u16, Vec<String>>,
+        timeout: Option<u64>,
         max_networks: Option<u32>,
     ) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-            dependencies,
-            is_proxy_reachable,
+            proxy_deps,
+            triggers,
+            timeout,
             max_networks,
         ))
     }
@@ -29,8 +31,9 @@ impl ServiceInfo {
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 *self = ServiceInfo::Registered(RegisteredServiceInfo {
-                    dependencies: unreg.dependencies.clone(),
-                    is_proxy_reachable: unreg.is_proxy_reachable,
+                    proxy_deps: unreg.proxy_deps.clone(),
+                    triggers: unreg.triggers.clone(),
+                    timeout: unreg.timeout,
                     max_networks: unreg.max_networks,
                     replicas: vec![Replica::new(ip, port, docker_container)],
                 });
@@ -56,8 +59,9 @@ impl ServiceInfo {
             reg.replicas.retain(|r| r.ip != ip);
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-                    reg.dependencies.clone(),
-                    reg.is_proxy_reachable,
+                    reg.proxy_deps.clone(),
+                    reg.triggers.clone(),
+                    reg.timeout,
                     reg.max_networks,
                 ));
             }
@@ -72,34 +76,36 @@ impl ServiceInfo {
                 .retain(|r| !r.matches_identity(ip, docker_container));
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-                    reg.dependencies.clone(),
-                    reg.is_proxy_reachable,
+                    reg.proxy_deps.clone(),
+                    reg.triggers.clone(),
+                    reg.timeout,
                     reg.max_networks,
                 ));
             }
         }
     }
 
-    pub(crate) fn is_proxy_reachable(&self) -> Option<u64> {
+    pub(crate) fn timeout(&self) -> Option<u64> {
         match self {
-            ServiceInfo::Unregistered(unreg) => unreg.is_proxy_reachable,
-            ServiceInfo::Registered(reg) => reg.is_proxy_reachable,
+            ServiceInfo::Unregistered(unreg) => unreg.timeout,
+            ServiceInfo::Registered(reg) => reg.timeout,
         }
     }
 
     pub(crate) fn update_from_file(&mut self, loaded: &Self) {
-        let loaded_dependencies = loaded.dependencies();
-        let loaded_is_proxy_reachable = loaded.is_proxy_reachable();
+        let loaded_timeout = loaded.timeout();
         let loaded_max_networks = loaded.max_networks();
         match self {
             ServiceInfo::Unregistered(unreg) => {
-                unreg.dependencies = loaded_dependencies;
-                unreg.is_proxy_reachable = loaded_is_proxy_reachable;
+                unreg.proxy_deps = loaded.proxy_deps().to_vec();
+                unreg.triggers.clone_from(loaded.triggers());
+                unreg.timeout = loaded_timeout;
                 unreg.max_networks = loaded_max_networks;
             }
             ServiceInfo::Registered(reg) => {
-                reg.dependencies = loaded_dependencies;
-                reg.is_proxy_reachable = loaded_is_proxy_reachable;
+                reg.proxy_deps = loaded.proxy_deps().to_vec();
+                reg.triggers.clone_from(loaded.triggers());
+                reg.timeout = loaded_timeout;
                 reg.max_networks = loaded_max_networks;
             }
         }
@@ -112,33 +118,51 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn dependencies(&self) -> Vec<String> {
+    pub(crate) fn proxy_deps(&self) -> &[String] {
         match self {
-            ServiceInfo::Unregistered(unreg) => unreg.dependencies.clone(),
-            ServiceInfo::Registered(reg) => reg.dependencies.clone(),
+            ServiceInfo::Unregistered(unreg) => &unreg.proxy_deps,
+            ServiceInfo::Registered(reg) => &reg.proxy_deps,
         }
+    }
+
+    pub(crate) fn triggers(&self) -> &HashMap<u16, Vec<String>> {
+        match self {
+            ServiceInfo::Unregistered(unreg) => &unreg.triggers,
+            ServiceInfo::Registered(reg) => &reg.triggers,
+        }
+    }
+
+    /// True iff `other` appears in any of this service's dep lists (proxy or backend).
+    pub(crate) fn deps_contain(&self, other: &str) -> bool {
+        self.proxy_deps().iter().any(|d| d == other)
+            || self.triggers().values().flatten().any(|d| d == other)
     }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct UnregisteredServiceInfo {
-    /// Dependencies of the service.
-    dependencies: Vec<String>,
+    /// Linear dep chain walked on proxy-triggered setup.
+    proxy_deps: Vec<String>,
+    /// Backend-triggered chains keyed by the trigger port observed on the
+    /// initiator's host. One linear chain per port; no implicit fan-out.
+    triggers: HashMap<u16, Vec<String>>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
-    is_proxy_reachable: Option<u64>,
+    timeout: Option<u64>,
     /// Maximum number of networks for this service.
     max_networks: Option<u32>,
 }
 
 impl UnregisteredServiceInfo {
     fn new(
-        dependencies: Vec<String>,
-        is_proxy_reachable: Option<u64>,
+        proxy_deps: Vec<String>,
+        triggers: HashMap<u16, Vec<String>>,
+        timeout: Option<u64>,
         max_networks: Option<u32>,
     ) -> Self {
         Self {
-            dependencies,
-            is_proxy_reachable,
+            proxy_deps,
+            triggers,
+            timeout,
             max_networks,
         }
     }
@@ -186,10 +210,13 @@ impl Replica {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RegisteredServiceInfo {
-    /// Dependencies of the service.
-    dependencies: Vec<String>,
+    /// Linear dep chain walked on proxy-triggered setup.
+    proxy_deps: Vec<String>,
+    /// Backend-triggered chains keyed by the trigger port observed on the
+    /// initiator's host. One linear chain per port; no implicit fan-out.
+    triggers: HashMap<u16, Vec<String>>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
-    is_proxy_reachable: Option<u64>,
+    timeout: Option<u64>,
     /// Maximum number of networks for this service.
     max_networks: Option<u32>,
     /// Replicas of this service.
@@ -197,43 +224,41 @@ pub(crate) struct RegisteredServiceInfo {
 }
 
 impl RegisteredServiceInfo {
-    pub(crate) fn dependency_chain(
+    /// Build the linear chain of edges for a proxy-triggered chain.
+    pub(crate) fn proxy_dependency_chain(
         &self,
         service_name: String,
         service_ip: IpAddr,
         service_docker: Option<&str>,
         services: &HashMap<String, ServiceInfo>,
     ) -> Vec<Edge> {
-        let mut chain = Vec::new();
-        let mut current_ip: Option<IpAddr> = Some(service_ip);
-        let mut current_docker: Option<String> = service_docker.map(String::from);
-        let mut current_name = service_name;
-        for dep in &self.dependencies {
-            let (dep_ip, dep_docker) = match services.get(dep) {
-                Some(ServiceInfo::Registered(reg)) => {
-                    let r = reg.pick_replica_least_clients();
-                    (Some(r.ip), r.docker_container.clone())
-                }
-                _ => (None, None),
-            };
-            let client = match current_ip {
-                Some(ip) => Client::new_service(current_name.clone(), ip, current_docker.clone()),
-                None => Client::new(current_name.clone(), None),
-            };
-            let edge = Edge::new(
-                current_ip,
-                client,
-                current_docker,
-                dep_ip,
-                Client::new(dep.clone(), None),
-                dep_docker.clone(),
-            );
-            chain.push(edge);
-            current_ip = dep_ip;
-            current_docker = dep_docker;
-            current_name.clone_from(dep);
-        }
-        chain
+        build_linear_chain(
+            &self.proxy_deps,
+            service_name,
+            service_ip,
+            service_docker,
+            services,
+        )
+    }
+
+    /// Build the chain of edges for the trigger at `port`, if one exists.
+    /// Each chain starts at this service's replica.
+    pub(crate) fn backend_dependency_chain(
+        &self,
+        service_name: &str,
+        service_ip: IpAddr,
+        service_docker: Option<&str>,
+        port: u16,
+        services: &HashMap<String, ServiceInfo>,
+    ) -> Option<Vec<Edge>> {
+        let chain = self.triggers.get(&port)?;
+        Some(build_linear_chain(
+            chain,
+            service_name.to_string(),
+            service_ip,
+            service_docker,
+            services,
+        ))
     }
 
     /// Invariant: a given `Client` exists on exactly one replica (sticky sessions).
@@ -262,8 +287,9 @@ impl RegisteredServiceInfo {
         for replica in &mut self.replicas {
             if let Some(ci) = replica.clients.clients_mut().get_mut(client) {
                 ci.remove_active_chains(1);
-                if ci.active_chains() == 0 {
-                    let ci = replica.clients.clients_mut().remove(client).unwrap();
+                if ci.active_chains() == 0
+                    && let Some(ci) = replica.clients.clients_mut().remove(client)
+                {
                     orchestrator
                         .send_net_teardown(
                             ci.client_ip(),
@@ -352,11 +378,10 @@ impl RegisteredServiceInfo {
     }
 
     /// Select the replica with the fewest active clients.
-    pub(crate) fn pick_replica_least_clients(&self) -> &Replica {
+    pub(crate) fn pick_replica_least_clients(&self) -> Option<&Replica> {
         self.replicas
             .iter()
             .min_by_key(|r| r.clients.clients().len())
-            .expect("registered service has no replicas")
     }
 
     pub(crate) fn add_client_to_replica(
@@ -412,8 +437,8 @@ impl RegisteredServiceInfo {
         &self.replicas
     }
 
-    pub(crate) fn dependencies(&self) -> &Vec<String> {
-        &self.dependencies
+    pub(crate) fn triggers(&self) -> &HashMap<u16, Vec<String>> {
+        &self.triggers
     }
 
     pub(crate) fn expired_proxy_clients(&self, timeout: Duration) -> Vec<Client> {
@@ -509,4 +534,47 @@ impl RegisteredServiceInfo {
             })
             .collect()
     }
+}
+
+/// Build a linear chain of edges from `start` → deps[0] → deps[1] → … → deps[N-1].
+fn build_linear_chain(
+    deps: &[String],
+    service_name: String,
+    service_ip: IpAddr,
+    service_docker: Option<&str>,
+    services: &HashMap<String, ServiceInfo>,
+) -> Vec<Edge> {
+    let mut chain = Vec::new();
+    let mut current_ip: Option<IpAddr> = Some(service_ip);
+    let mut current_docker: Option<String> = service_docker.map(String::from);
+    let mut current_name = service_name;
+    for dep in deps {
+        let (dep_ip, dep_docker) = match services.get(dep) {
+            Some(ServiceInfo::Registered(reg)) => {
+                if let Some(r) = reg.pick_replica_least_clients() {
+                    (Some(r.ip()), r.docker_container().map(String::from))
+                } else {
+                    (None, None)
+                }
+            }
+            _ => (None, None),
+        };
+        let client = match current_ip {
+            Some(ip) => Client::new_service(current_name.clone(), ip, current_docker.clone()),
+            None => Client::new(current_name.clone(), None),
+        };
+        let edge = Edge::new(
+            current_ip,
+            client,
+            current_docker,
+            dep_ip,
+            Client::new(dep.clone(), None),
+            dep_docker.clone(),
+        );
+        chain.push(edge);
+        current_ip = dep_ip;
+        current_docker = dep_docker;
+        current_name.clone_from(dep);
+    }
+    chain
 }

@@ -2,8 +2,9 @@ use crate::env::NET_TYPE;
 use crate::services::clients::ClientInfo;
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{ErrorHandler, Location, location};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -11,6 +12,25 @@ use tokio::sync::RwLock;
 pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String {
     let mut entries: Vec<_> = services.iter().collect();
     entries.sort_by_key(|(name, _)| *name);
+
+    // Replica identities that initiate an outgoing edge somewhere (proxy or
+    // backend dep walk). Used so a replica counts as "active" even when its
+    // own client map is empty — it's still doing work as a chain source.
+    let initiators: HashSet<(String, IpAddr, Option<String>)> = services
+        .values()
+        .filter_map(|info| {
+            if let ServiceInfo::Registered(reg) = info {
+                Some(reg.replicas().iter().flat_map(|r| r.clients().keys()))
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .filter_map(|c| {
+            c.replica_identity()
+                .map(|(ip, docker)| (c.name().to_string(), ip, docker.map(String::from)))
+        })
+        .collect();
 
     let mut graphviz = String::from(
         "digraph G {\n\
@@ -20,7 +40,7 @@ pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String
     );
     for (name, info) in entries {
         let style = info.graphviz_style();
-        let label = info.graphviz_label(name);
+        let label = info.graphviz_label(name, &initiators);
         let _ =
             writeln!(graphviz, "\t\"{name}\" [label=\"{label}\"] {style};").handle_err(location!());
         if let ServiceInfo::Registered(registered) = info {
@@ -59,13 +79,24 @@ pub(crate) async fn generate_graphviz(services: Arc<RwLock<HashMap<String, Servi
 }
 
 impl ServiceInfo {
-    fn graphviz_label(&self, name: &str) -> String {
+    fn graphviz_label(
+        &self,
+        name: &str,
+        initiators: &HashSet<(String, IpAddr, Option<String>)>,
+    ) -> String {
         if let ServiceInfo::Registered(reg) = self {
             let total = reg.replicas().len();
             let active = reg
                 .replicas()
                 .iter()
-                .filter(|r| !r.clients().is_empty())
+                .filter(|r| {
+                    !r.clients().is_empty()
+                        || initiators.contains(&(
+                            name.to_string(),
+                            r.ip(),
+                            r.docker_container().map(String::from),
+                        ))
+                })
                 .count();
             return format!("{name} ({active}/{total})");
         }
@@ -73,11 +104,11 @@ impl ServiceInfo {
     }
 
     fn graphviz_style(&self) -> &'static str {
-        let is_proxy_reachable = self.is_proxy_reachable().is_some();
+        let is_entry_point = self.timeout().is_some();
         match self {
-            ServiceInfo::Unregistered(_) if is_proxy_reachable => "[style=solid, color=red]",
+            ServiceInfo::Unregistered(_) if is_entry_point => "[style=solid, color=red]",
             ServiceInfo::Unregistered(_) => "[style=dashed, color=red]",
-            ServiceInfo::Registered(_) if is_proxy_reachable => "[style=solid, color=green]",
+            ServiceInfo::Registered(_) if is_entry_point => "[style=solid, color=green]",
             ServiceInfo::Registered(_) => "[style=dashed, color=green]",
         }
     }

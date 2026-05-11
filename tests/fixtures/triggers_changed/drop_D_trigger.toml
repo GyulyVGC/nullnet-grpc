@@ -1,0 +1,12 @@
+[[services]]
+name = "A"
+timeout = 0
+proxy_dependencies = ["B"]
+
+[[services.triggers]]
+port = 5555
+chain = ["C"]
+
+[[services]]
+name = "D"
+timeout = 0

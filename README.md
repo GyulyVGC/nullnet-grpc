@@ -47,12 +47,18 @@ TIMEOUT=0
 [[services]]
 name = "color.com"
 timeout = 0
-dependencies = ["fs.color.com"]
-max_networks = 3
+proxy_dependencies = ["fs.color.com"]
+
+[[services.triggers]]
+port = 5555
+chain = ["ts.color.com"]
 
 [[services]]
-...
+name = "fs.color.com"
 ```
+
+- `proxy_dependencies` is a linear dep chain walked when the service is reached via a `Proxy` RPC from nullnet-proxy
+- each `[[services.triggers]]` block pairs a port observed on the initiator's host with a linear chain walked when the service is reached via a `BackendTrigger` RPC from nullnet-client (one chain per port)
 
 - run the project as daemon with:
 ```
@@ -82,10 +88,11 @@ CONTROL_SERVICE_PORT=50051
 
 ### nullnet-client
 
-- set environment variables (set `CONTROL_SERVICE_ADDR` to the IP of nullnet-grpc-server)
+- set environment variables (set `CONTROL_SERVICE_ADDR` to the IP of nullnet-grpc-server, `ETH_NAME` to the ethernet interface to monitor)
 ```
 CONTROL_SERVICE_ADDR=192.168.1.100
 CONTROL_SERVICE_PORT=50051
+ETH_NAME=ens18
 ```
 
 - service configuration must be stored at `./services.toml` and declare services as follows:

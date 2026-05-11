@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
 
-pub(crate) async fn check_proxy_timeouts(
+pub(crate) async fn check_timeouts(
     services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
     orchestrator: Orchestrator,
     config_changed: Arc<Notify>,
@@ -21,11 +21,11 @@ pub(crate) async fn check_proxy_timeouts(
         }
 
         let mut services_mut = services.write().await;
-        apply_proxy_timeouts(&mut services_mut, &orchestrator).await;
+        apply_timeouts(&mut services_mut, &orchestrator).await;
     }
 }
 
-pub(crate) async fn apply_proxy_timeouts(
+pub(crate) async fn apply_timeouts(
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
 ) {
@@ -39,7 +39,7 @@ fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<Ser
     let mut changes = Vec::new();
 
     for (name, si) in services {
-        let Some(timeout) = si.is_proxy_reachable() else {
+        let Some(timeout) = si.timeout() else {
             continue;
         };
         if timeout == 0 {
@@ -64,7 +64,7 @@ fn nearest_timeout(services: &HashMap<String, ServiceInfo>) -> Duration {
     let mut nearest = Duration::from_secs(*TIMEOUT);
 
     for si in services.values() {
-        let Some(timeout) = si.is_proxy_reachable() else {
+        let Some(timeout) = si.timeout() else {
             continue;
         };
         if timeout == 0 {
