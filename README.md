@@ -48,18 +48,17 @@ TIMEOUT=0
 name = "color.com"
 timeout = 0
 proxy_dependencies = ["fs.color.com"]
-backend_dependencies = [
-  ["a.color.com", "b.color.com"],
-  ["c.color.com"],
-]
-max_networks = 3
+
+[[services.triggers]]
+port = 5555
+chain = ["ts.color.com"]
 
 [[services]]
-...
+name = "fs.color.com"
 ```
 
 - `proxy_dependencies` is a linear dep chain walked when the service is reached via a `Proxy` RPC from nullnet-proxy
-- `backend_dependencies` is a list of parallel linear chains walked when the service is reached via a `BackendTrigger` RPC from nullnet-client; fan-out = outer length
+- each `[[services.triggers]]` block pairs a port observed on the initiator's host with a linear chain walked when the service is reached via a `BackendTrigger` RPC from nullnet-client (one chain per port)
 
 - run the project as daemon with:
 ```
@@ -108,20 +107,6 @@ docker_container = "stack-name_container-name" # should correspond to the label 
 [[services]]
 ...
 ```
-
-- trigger configuration must be stored at `./triggers.toml` and declare per-port triggers as follows:
-```
-# triggers = [] # use this if you don't want to declare any trigger
-
-[[triggers]]
-port = 8080
-service_name = "color.com"
-
-[[triggers]]
-...
-```
-
-  When eBPF observes an outgoing packet on `ETH_NAME` whose destination port matches one of the declared triggers, the client sends a `BackendTrigger` RPC to the server with the corresponding `service_name`.
 
 - run the project as daemon with:
 ```

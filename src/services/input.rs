@@ -121,14 +121,7 @@ impl ServicesToml {
         // service as a backend dep without making it an entry point, do not
         // declare it explicitly — listing it in a `triggers.chain` is enough.
         for s in self.services {
-            let triggers = s
-                .triggers
-                .into_iter()
-                .map(|t| {
-                    let port = u16::try_from(t.port).expect("trigger port out of range");
-                    (port, t.chain)
-                })
-                .collect();
+            let triggers = s.triggers.into_iter().map(|t| (t.port, t.chain)).collect();
             ret_val.insert(
                 s.name,
                 ServiceInfo::new(
@@ -187,7 +180,7 @@ struct ServiceToml {
 
 #[derive(Deserialize)]
 struct TriggerToml {
-    port: u32,
+    port: u16,
     #[serde(default)]
     chain: Vec<String>,
 }
