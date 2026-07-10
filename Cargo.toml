@@ -20,7 +20,7 @@ gag = "1.0.0"
 chrono = "0.4.44"
 
 [build-dependencies]
-tonic-prost-build = "0.14.5"
+tonic-prost-build = "0.14.6"
 
 #[dev-dependencies]
 #serde_test = "1.0.177"
